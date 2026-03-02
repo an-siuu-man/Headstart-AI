@@ -2,6 +2,7 @@
 
 import * as React from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { User, Settings as SettingsIcon, LogOut, Menu } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
@@ -14,13 +15,41 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { Sheet, SheetContent, SheetTrigger, SheetTitle, SheetDescription } from "@/components/ui/sheet"
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
-import { currentUser } from "@/lib/data"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { SidebarContent } from "@/components/layout/sidebar"
 import { ModeToggle } from "@/components/mode-toggle"
+import { useAuthUser } from "@/hooks/use-auth-user"
 
 export function Header() {
   const [open, setOpen] = React.useState(false)
+  const [isSigningOut, setIsSigningOut] = React.useState(false)
+  const router = useRouter()
+  const { user } = useAuthUser()
+
+  const displayName = user?.displayName || "Student"
+  const email = user?.email || ""
+  const avatarFallback = displayName
+    .split(" ")
+    .map((part) => part[0] || "")
+    .join("")
+    .slice(0, 2)
+    .toUpperCase() || "HS"
+
+  async function handleSignOut() {
+    if (isSigningOut) return
+
+    setIsSigningOut(true)
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      })
+    } finally {
+      setIsSigningOut(false)
+      router.replace("/login")
+      router.refresh()
+    }
+  }
 
   return (
     <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b px-4 md:px-6 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -50,19 +79,18 @@ export function Header() {
 
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <Button variant="ghost" className="relative h-8 w-8 rounded-full">
+            <Button variant="ghost" className="relative h-8 w-8 rounded-full" disabled={isSigningOut}>
               <Avatar className="h-8 w-8">
-                <AvatarImage src={currentUser.avatarUrl} alt={currentUser.name} />
-                <AvatarFallback>AS</AvatarFallback>
+                <AvatarFallback>{avatarFallback}</AvatarFallback>
               </Avatar>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent className="w-56" align="end" forceMount>
             <DropdownMenuLabel className="font-normal">
               <div className="flex flex-col space-y-1">
-                <p className="text-sm font-medium leading-none">{currentUser.name}</p>
+                <p className="text-sm font-medium leading-none">{displayName}</p>
                 <p className="text-xs leading-none text-muted-foreground">
-                  {currentUser.email}
+                  {email || "No email"}
                 </p>
               </div>
             </DropdownMenuLabel>
@@ -80,9 +108,16 @@ export function Header() {
               </Link>
             </DropdownMenuItem>
             <DropdownMenuSeparator />
-            <DropdownMenuItem className="text-destructive">
+            <DropdownMenuItem
+              className="text-destructive"
+              onSelect={(event) => {
+                event.preventDefault()
+                void handleSignOut()
+              }}
+              disabled={isSigningOut}
+            >
               <LogOut className="mr-2 h-4 w-4" />
-              <span>Log out</span>
+              <span>{isSigningOut ? "Logging out..." : "Log out"}</span>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

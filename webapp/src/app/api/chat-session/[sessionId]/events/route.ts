@@ -4,8 +4,12 @@ import {
   subscribeToRuntimeSession,
   type RuntimeChatEvent,
 } from "@/lib/chat-runtime-store";
-import { getPersistedSessionSnapshot } from "@/lib/chat-repository";
+import {
+  assertSessionOwnership,
+  getPersistedSessionSnapshot,
+} from "@/lib/chat-repository";
 import { buildSessionDto, type ChatSessionDto } from "@/lib/chat-types";
+import { resolveRequestUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 
@@ -92,6 +96,21 @@ export async function GET(
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   const { sessionId } = await params;
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? "";
+
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const ownedSession = await assertSessionOwnership(sessionId, userId);
+  if (!ownedSession) {
+    return NextResponse.json(
+      { error: "session not found or expired" },
+      { status: 404 },
+    );
+  }
+
   const snapshot = await getPersistedSessionSnapshot(sessionId);
 
   if (!snapshot) {

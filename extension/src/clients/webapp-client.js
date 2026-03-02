@@ -12,6 +12,7 @@ export async function ingestAssignment(payload, baseUrl) {
   const backendBaseUrl = toBaseUrl(baseUrl);
   const res = await fetch(`${backendBaseUrl}/api/ingest-assignment`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
@@ -33,6 +34,7 @@ export async function createChatSession({ payload, userId }, baseUrl) {
 
   const res = await fetch(`${backendBaseUrl}/api/chat-session`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -50,6 +52,7 @@ export async function runAgent({ assignmentUuid, payload, pdfFiles }, baseUrl) {
 
   const res = await fetch(`${backendBaseUrl}/api/run-agent`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       assignment_uuid: assignmentUuid,

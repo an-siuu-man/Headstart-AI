@@ -6,18 +6,36 @@ import {
 } from "@/lib/chat-repository";
 import { startChatSessionRun } from "@/lib/chat-session-runner";
 import { buildSessionDto } from "@/lib/chat-types";
+import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export async function POST(req: Request) {
   const body = await req.json();
   const payload = body?.payload;
-  const userId = typeof body?.user_id === "string" ? body.user_id.trim() : "";
+  const fallbackUserId = typeof body?.user_id === "string" ? body.user_id.trim() : "";
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? fallbackUserId;
+
+  if (!resolvedUser?.user.id && fallbackUserId && !UUID_PATTERN.test(fallbackUserId)) {
+    return NextResponse.json(
+      {
+        error:
+          "user_id must be a valid Supabase Auth UUID. Sign in on the webapp and retry.",
+      },
+      { status: 400 },
+    );
+  }
 
   if (!userId) {
     return NextResponse.json(
-      { error: "user_id is required and must be a non-empty string" },
-      { status: 400 },
+      {
+        error:
+          "Authentication required. Sign in on the webapp before generating a guide.",
+      },
+      { status: 401 },
     );
   }
 
@@ -54,7 +72,11 @@ export async function POST(req: Request) {
     }
 
     const runtimeState = getRuntimeSession(created.sessionId);
-    return NextResponse.json(buildSessionDto(snapshot, runtimeState));
+    const response = NextResponse.json(buildSessionDto(snapshot, runtimeState));
+    if (resolvedUser?.refreshedSession) {
+      applyAuthCookies(response, resolvedUser.refreshedSession);
+    }
+    return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(

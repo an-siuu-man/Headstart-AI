@@ -1,7 +1,7 @@
 "use client"
 
 import Link from "next/link"
-import { usePathname } from "next/navigation"
+import { usePathname, useRouter } from "next/navigation"
 import { useState } from "react"
 import { Home, FileText, BookOpen, LogOut, BrainCircuit, MessageSquare, PanelLeftClose, PanelLeftOpen } from "lucide-react"
 
@@ -21,6 +21,8 @@ interface SidebarContentProps {
   collapsed?: boolean
   onToggleCollapse?: () => void
   showCollapseToggle?: boolean
+  onSignOut?: () => void
+  isSigningOut?: boolean
 }
 
 export function SidebarContent({
@@ -29,6 +31,8 @@ export function SidebarContent({
   collapsed = false,
   onToggleCollapse,
   showCollapseToggle = false,
+  onSignOut,
+  isSigningOut = false,
 }: SidebarContentProps) {
   const pathname = usePathname()
   
@@ -108,6 +112,8 @@ export function SidebarContent({
               "w-full text-muted-foreground hover:text-destructive transition-all duration-300",
               collapsed ? "justify-center px-2" : "justify-start gap-2"
             )}
+            onClick={onSignOut}
+            disabled={isSigningOut}
          >
             <LogOut className="h-4 w-4" />
             <span
@@ -116,7 +122,7 @@ export function SidebarContent({
                 collapsed ? "max-w-0 -translate-x-1 opacity-0" : "max-w-[100px] translate-x-0 opacity-100"
               )}
             >
-              Log out
+              {isSigningOut ? "Logging out..." : "Log out"}
             </span>
          </Button>
       </div>
@@ -126,6 +132,24 @@ export function SidebarContent({
 
 export function Sidebar() {
   const [collapsed, setCollapsed] = useState(false)
+  const [isSigningOut, setIsSigningOut] = useState(false)
+  const router = useRouter()
+
+  async function handleSignOut() {
+    if (isSigningOut) return
+
+    setIsSigningOut(true)
+    try {
+      await fetch("/api/auth/logout", {
+        method: "POST",
+        credentials: "include",
+      })
+    } finally {
+      setIsSigningOut(false)
+      router.replace("/login")
+      router.refresh()
+    }
+  }
 
   return (
     <aside
@@ -134,10 +158,12 @@ export function Sidebar() {
         collapsed ? "w-20" : "w-64"
       )}
     >
-       <SidebarContent
+      <SidebarContent
          collapsed={collapsed}
          onToggleCollapse={() => setCollapsed((value) => !value)}
          showCollapseToggle
+         onSignOut={handleSignOut}
+         isSigningOut={isSigningOut}
        />
     </aside>
   )

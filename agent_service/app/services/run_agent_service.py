@@ -265,8 +265,9 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
       or chat.error on failure.
     """
     logger.info(
-        "POST %s [chat.stream] | guide_len=%d | history=%d | retrieval_chunks=%d",
+        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d",
         route_path,
+        len(req.assignment_payload or {}),
         len(req.guide_markdown or ""),
         len(req.chat_history or []),
         len(req.retrieval_context or []),

@@ -1,7 +1,11 @@
 import { NextResponse } from "next/server";
-import { getPersistedSessionSnapshot } from "@/lib/chat-repository";
+import {
+  assertSessionOwnership,
+  getPersistedSessionSnapshot,
+} from "@/lib/chat-repository";
 import { getRuntimeSession } from "@/lib/chat-runtime-store";
 import { buildSessionDto } from "@/lib/chat-types";
+import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 
@@ -43,6 +47,21 @@ export async function GET(
   { params }: { params: Promise<{ sessionId: string }> },
 ) {
   const { sessionId } = await params;
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? "";
+
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  const ownedSession = await assertSessionOwnership(sessionId, userId);
+  if (!ownedSession) {
+    return NextResponse.json(
+      { error: "session not found or expired" },
+      { status: 404 },
+    );
+  }
+
   const url = new URL(req.url);
   const sinceEpoch = toSinceEpoch(url.searchParams.get("since"));
   const waitMs = toBoundedWaitMs(url.searchParams.get("wait_ms"));
@@ -84,5 +103,9 @@ export async function GET(
     }
   }
 
-  return NextResponse.json(session);
+  const response = NextResponse.json(session);
+  if (resolvedUser?.refreshedSession) {
+    applyAuthCookies(response, resolvedUser.refreshedSession);
+  }
+  return response;
 }

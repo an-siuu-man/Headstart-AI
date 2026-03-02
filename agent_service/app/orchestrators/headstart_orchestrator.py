@@ -25,7 +25,7 @@ import json
 import os
 import re
 import time
-from typing import Iterator, Optional
+from typing import Any, Iterator, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -522,19 +522,101 @@ Student question:
 {user_message}
 """
 
+MAX_CHAT_PAYLOAD_CHARS = 12000
+MAX_CHAT_GUIDE_CHARS = 32000
+MAX_CHAT_HISTORY_CHARS = 12000
+MAX_CHAT_RETRIEVAL_CHARS = 12000
+MAX_CHAT_USER_MESSAGE_CHARS = 4000
+MAX_CHAT_FIELD_CHARS = 2200
+MAX_CHAT_ARRAY_ITEMS = 20
+MAX_CHAT_OBJECT_KEYS = 40
+MAX_CHAT_OBJECT_DEPTH = 4
+CHAT_PAYLOAD_DROP_KEYS = {
+    "base64Data",
+    "base64_data",
+    "pdfAttachments",
+    "pdf_files",
+    "pdfFiles",
+    "pdfs",
+    "raw_payload",
+    "rawPayload",
+}
+BASE64_SAMPLE_PATTERN = re.compile(r"^[A-Za-z0-9+/=]+$")
+
+
+def _truncate_for_chat(text: str, max_chars: int) -> str:
+    if len(text) <= max_chars:
+        return text
+    omitted = len(text) - max_chars
+    return f"{text[:max_chars]}\n...[truncated {omitted} chars]"
+
+
+def _looks_like_base64_blob(text: str) -> bool:
+    compact = re.sub(r"\s+", "", text)
+    if len(compact) < 1200:
+        return False
+
+    sample = compact[:2000]
+    return bool(BASE64_SAMPLE_PATTERN.fullmatch(sample))
+
+
+def _sanitize_payload_value_for_chat(value: Any, depth: int = 0) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, (bool, int, float)):
+        return value
+    if isinstance(value, str):
+        if _looks_like_base64_blob(value):
+            return "[omitted binary/base64 content]"
+        return _truncate_for_chat(value, MAX_CHAT_FIELD_CHARS)
+    if isinstance(value, list):
+        cleaned = [
+            _sanitize_payload_value_for_chat(item, depth + 1)
+            for item in value[:MAX_CHAT_ARRAY_ITEMS]
+        ]
+        if len(value) > MAX_CHAT_ARRAY_ITEMS:
+            cleaned.append(f"... [{len(value) - MAX_CHAT_ARRAY_ITEMS} more items omitted]")
+        return cleaned
+    if isinstance(value, dict):
+        if depth >= MAX_CHAT_OBJECT_DEPTH:
+            return "[omitted nested object]"
+        out = {}
+        kept = 0
+        for key, entry in value.items():
+            key_str = str(key)
+            if key_str in CHAT_PAYLOAD_DROP_KEYS:
+                continue
+            if kept >= MAX_CHAT_OBJECT_KEYS:
+                out["_omitted_keys"] = f"{len(value) - kept} keys omitted"
+                break
+            out[key_str] = _sanitize_payload_value_for_chat(entry, depth + 1)
+            kept += 1
+        return out
+    return _truncate_for_chat(str(value), MAX_CHAT_FIELD_CHARS)
+
+
+def _sanitize_assignment_payload_for_chat(payload: dict) -> dict:
+    if not isinstance(payload, dict):
+        return {}
+    cleaned = _sanitize_payload_value_for_chat(payload)
+    if isinstance(cleaned, dict):
+        return cleaned
+    return {}
+
 
 def _format_chat_history_for_prompt(chat_history: Optional[list[dict]]) -> str:
     if not chat_history:
         return "(none)"
 
     lines = []
-    for item in chat_history[-12:]:
+    for item in chat_history[-8:]:
         if not isinstance(item, dict):
             continue
         role = str(item.get("role", "unknown")).strip() or "unknown"
         content = str(item.get("content", "")).strip()
         if not content:
             continue
+        content = _truncate_for_chat(content, 1800)
         lines.append(f"- {role}: {content}")
 
     return "\n".join(lines) if lines else "(none)"
@@ -552,6 +634,7 @@ def _format_retrieval_context_for_prompt(retrieval_context: Optional[list[dict]]
         text = str(item.get("text", "")).strip()
         if not text:
             continue
+        text = _truncate_for_chat(text, 900)
 
         chunk_id = str(item.get("chunk_id", "?"))
         source = str(item.get("source", "unknown"))
@@ -602,13 +685,36 @@ def stream_headstart_chat_answer(
     )
     chain = _build_followup_chat_chain(llm)
 
-    payload_str = json.dumps(assignment_payload or {}, ensure_ascii=False)
-    guide_markdown_str = guide_markdown or "(no generated guide available)"
-    chat_history_str = _format_chat_history_for_prompt(chat_history)
-    retrieval_context_str = _format_retrieval_context_for_prompt(retrieval_context)
+    sanitized_payload = _sanitize_assignment_payload_for_chat(assignment_payload or {})
+    payload_str = _truncate_for_chat(
+        json.dumps(sanitized_payload, ensure_ascii=False),
+        MAX_CHAT_PAYLOAD_CHARS,
+    )
+    guide_markdown_str = _truncate_for_chat(
+        guide_markdown or "(no generated guide available)",
+        MAX_CHAT_GUIDE_CHARS,
+    )
+    chat_history_str = _truncate_for_chat(
+        _format_chat_history_for_prompt(chat_history),
+        MAX_CHAT_HISTORY_CHARS,
+    )
+    retrieval_context_str = _truncate_for_chat(
+        _format_retrieval_context_for_prompt(retrieval_context),
+        MAX_CHAT_RETRIEVAL_CHARS,
+    )
     user_message_str = (user_message or "").strip()
     if not user_message_str:
         user_message_str = "Please summarize what I should do next."
+    user_message_str = _truncate_for_chat(user_message_str, MAX_CHAT_USER_MESSAGE_CHARS)
+
+    logger.info(
+        "Follow-up context sizes | payload=%d guide=%d history=%d retrieval=%d user=%d",
+        len(payload_str),
+        len(guide_markdown_str),
+        len(chat_history_str),
+        len(retrieval_context_str),
+        len(user_message_str),
+    )
 
     inputs = {
         "payload": payload_str,

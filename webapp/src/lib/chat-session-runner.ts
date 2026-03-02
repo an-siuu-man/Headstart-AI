@@ -37,9 +37,87 @@ type AgentChatEventName =
   | "chat.error"
   | "chat.heartbeat";
 
+const CHAT_PAYLOAD_DROP_KEYS = new Set([
+  "base64Data",
+  "base64_data",
+  "pdfAttachments",
+  "pdf_files",
+  "pdfFiles",
+  "pdfs",
+  "raw_payload",
+  "rawPayload",
+]);
+const MAX_CHAT_FIELD_TEXT_CHARS = 2200;
+const MAX_CHAT_ARRAY_ITEMS = 20;
+const MAX_CHAT_OBJECT_KEYS = 40;
+const MAX_CHAT_OBJECT_DEPTH = 4;
+
 function toErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
   return String(err);
+}
+
+function truncateForChat(value: string, maxChars = MAX_CHAT_FIELD_TEXT_CHARS) {
+  if (value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  return `${value.slice(0, maxChars)}\n...[truncated ${omitted} chars]`;
+}
+
+function looksLikeBase64Blob(value: string) {
+  const compact = value.replace(/\s+/g, "");
+  if (compact.length < 1200) return false;
+  const sample = compact.slice(0, 2000);
+  return /^[A-Za-z0-9+/=]+$/.test(sample);
+}
+
+function sanitizePayloadValueForChat(value: unknown, depth = 0): unknown {
+  if (value == null) return null;
+  if (typeof value === "boolean" || typeof value === "number") {
+    return Number.isFinite(value) ? value : null;
+  }
+  if (typeof value === "string") {
+    if (looksLikeBase64Blob(value)) {
+      return "[omitted binary/base64 content]";
+    }
+    return truncateForChat(value);
+  }
+  if (Array.isArray(value)) {
+    const limited = value
+      .slice(0, MAX_CHAT_ARRAY_ITEMS)
+      .map((item) => sanitizePayloadValueForChat(item, depth + 1));
+    if (value.length > MAX_CHAT_ARRAY_ITEMS) {
+      limited.push(`[${value.length - MAX_CHAT_ARRAY_ITEMS} more items omitted]`);
+    }
+    return limited;
+  }
+  if (typeof value === "object") {
+    if (depth >= MAX_CHAT_OBJECT_DEPTH) {
+      return "[omitted nested object]";
+    }
+    const source = value as Record<string, unknown>;
+    const output: Record<string, unknown> = {};
+    let written = 0;
+
+    for (const [key, entry] of Object.entries(source)) {
+      if (CHAT_PAYLOAD_DROP_KEYS.has(key)) continue;
+      if (written >= MAX_CHAT_OBJECT_KEYS) {
+        output._omitted_keys = `${Object.keys(source).length - written} keys omitted`;
+        break;
+      }
+      output[key] = sanitizePayloadValueForChat(entry, depth + 1);
+      written += 1;
+    }
+    return output;
+  }
+  return truncateForChat(String(value));
+}
+
+function sanitizeAssignmentPayloadForFollowup(payload: AssignmentPayload) {
+  const sanitized = sanitizePayloadValueForChat(payload);
+  if (!sanitized || typeof sanitized !== "object" || Array.isArray(sanitized)) {
+    return {};
+  }
+  return sanitized as Record<string, unknown>;
 }
 
 function parseJsonObject(raw: string) {
@@ -428,11 +506,12 @@ async function runFollowupChat(input: {
     const chatHistory = toAgentHistory(sessionContext.messages)
       .filter((message) => message.content.trim().length > 0)
       .slice(-6);
+    const assignmentPayload = sanitizeAssignmentPayloadForFollowup(sessionContext.payload);
 
     const streamResponse = await openAgentChatStream(
       agentUrl,
       JSON.stringify({
-        assignment_payload: sessionContext.payload,
+        assignment_payload: assignmentPayload,
         guide_markdown: sessionContext.guideMarkdown,
         chat_history: chatHistory,
         retrieval_context: retrievalContext,

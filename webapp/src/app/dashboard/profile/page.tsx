@@ -10,11 +10,11 @@ import {
   ShieldCheck,
 } from "lucide-react"
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar"
+import { Avatar, AvatarFallback } from "@/components/ui/avatar"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { currentUser } from "@/lib/data"
+import { useAuthUser } from "@/hooks/use-auth-user"
 import { cn } from "@/lib/utils"
 
 type IntegrationStatus = "Connected" | "Not Connected" | "Needs Attention"
@@ -77,7 +77,11 @@ function statusTone(status: IntegrationStatus) {
 }
 
 export default function ProfilePage() {
-  const initials = currentUser.name
+  const { user } = useAuthUser()
+  const displayName = user?.displayName || "Student"
+  const email = user?.email || ""
+
+  const initials = displayName
     .split(" ")
     .map((part) => part[0])
     .join("")
@@ -98,13 +102,12 @@ export default function ProfilePage() {
           <CardContent className="flex flex-col gap-4 p-6 sm:flex-row sm:items-center sm:justify-between">
             <div className="flex items-center gap-4">
               <Avatar className="h-20 w-20 ring-2 ring-border/70">
-                <AvatarImage src={currentUser.avatarUrl} alt={currentUser.name} />
                 <AvatarFallback className="text-lg font-semibold">{initials}</AvatarFallback>
               </Avatar>
 
               <div>
-                <p className="text-2xl font-heading font-bold tracking-tight">{currentUser.name}</p>
-                <p className="text-sm text-muted-foreground">{currentUser.email}</p>
+                <p className="text-2xl font-heading font-bold tracking-tight">{displayName}</p>
+                <p className="text-sm text-muted-foreground">{email || "No email"}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <Badge variant="outline" className="border-border/70 bg-background/70 px-3 py-1">
                     Student Account

@@ -5,6 +5,7 @@ import {
 } from "@/lib/chat-repository";
 import { emitChatMessageCreated, getRuntimeSession } from "@/lib/chat-runtime-store";
 import { startFollowupChatRun } from "@/lib/chat-session-runner";
+import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
 
@@ -19,13 +20,14 @@ export async function POST(
   const { sessionId } = await params;
   const body = await req.json();
 
-  const userId = typeof body?.user_id === "string" ? body.user_id.trim() : "";
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? "";
   const content = typeof body?.content === "string" ? body.content.trim() : "";
 
   if (!userId) {
     return NextResponse.json(
-      { error: "user_id is required" },
-      { status: 400 },
+      { error: "Authentication required" },
+      { status: 401 },
     );
   }
 
@@ -89,12 +91,16 @@ export async function POST(
       userMessageContent: content,
     });
 
-    return NextResponse.json({
+    const response = NextResponse.json({
       ok: true,
       session_id: sessionId,
       user_message_id: userMessage.id,
       assistant_message_id: assistantMessage.id,
     });
+    if (resolvedUser?.refreshedSession) {
+      applyAuthCookies(response, resolvedUser.refreshedSession);
+    }
+    return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(

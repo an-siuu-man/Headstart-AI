@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { fetchDashboardData, getCourse } from "@/lib/data"
 import { Assignment, GeneratedGuide, User } from "@/lib/types"
+import { useAuthUser } from "@/hooks/use-auth-user"
 import { cn } from "@/lib/utils"
 
 type DashboardData = {
@@ -47,6 +48,7 @@ function priorityTone(priority: Assignment["priority"]) {
 
 export default function Dashboard() {
   const [data, setData] = useState<DashboardData | null>(null)
+  const { user: authUser } = useAuthUser()
 
   useEffect(() => {
     fetchDashboardData().then((response) => {
@@ -71,6 +73,7 @@ export default function Dashboard() {
   }
 
   const readyGuides = data.generatedGuides.filter((guide) => guide.status === "Ready").length
+  const firstName = (authUser?.displayName || data.user.name).split(" ")[0]
 
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-5">
@@ -82,7 +85,7 @@ export default function Dashboard() {
                 Dashboard
               </p>
               <h2 className="text-3xl font-heading font-bold tracking-tight">
-                {greeting()}, {data.user.name.split(" ")[0]}
+                {greeting()}, {firstName}
               </h2>
               <p className="mt-1 text-muted-foreground">
                 Focus on what is due next and which guides are ready.
