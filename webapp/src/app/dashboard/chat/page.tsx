@@ -1,22 +1,16 @@
 "use client"
 
 import { type FormEvent, Suspense, useEffect, useMemo, useRef, useState } from "react"
-import { useSearchParams } from "next/navigation"
+import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
-import { Bot, LoaderCircle, Send } from "lucide-react"
+import { LoaderCircle, Send } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
@@ -39,7 +33,7 @@ type AssignmentPayload = {
   pdfAttachments?: PdfAttachment[]
 }
 
-type ChatSessionStatus = "queued" | "running" | "completed" | "failed"
+type ChatSessionStatus = "queued" | "running" | "completed" | "failed" | "archived"
 type ChatSessionStage =
   | "queued"
   | "preparing_payload"
@@ -78,6 +72,21 @@ type ChatSessionResponse = {
   error: string | null
   payload: AssignmentPayload
   messages: ChatMessageResponse[]
+}
+
+type ChatSessionListItemResponse = {
+  session_id: string
+  assignment_uuid: string
+  title: string
+  status: ChatSessionStatus
+  created_at: number
+  updated_at: number
+  context: {
+    assignment_title: string
+    course_name: string | null
+    due_at_iso: string | null
+    attachment_count: number
+  }
 }
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -207,6 +216,13 @@ function stageLabel(stage: ChatSessionStage) {
   }
 }
 
+function formatDateTime(value: number | string | null | undefined) {
+  if (value == null) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return format(date, "MMM d, yyyy h:mm a")
+}
+
 function ChatPageFallback() {
   return (
     <div className="space-y-6">
@@ -224,9 +240,13 @@ function ChatPageFallback() {
 }
 
 function DashboardChatPageContent() {
+  const router = useRouter()
   const searchParams = useSearchParams()
   const sessionId = (searchParams.get("session") || "").trim()
 
+  const [sessionList, setSessionList] = useState<ChatSessionListItemResponse[]>([])
+  const [isSessionListLoading, setIsSessionListLoading] = useState(false)
+  const [sessionListError, setSessionListError] = useState<string | null>(null)
   const [session, setSession] = useState<ChatSessionResponse | null>(null)
   const [isPolling, setIsPolling] = useState(false)
   const [errorText, setErrorText] = useState<string | null>(null)
@@ -293,6 +313,48 @@ function DashboardChatPageContent() {
       updated_at: Date.now(),
     }
   }
+
+  useEffect(() => {
+    if (sessionId) {
+      return
+    }
+
+    let isDisposed = false
+    setIsSessionListLoading(true)
+    setSessionListError(null)
+
+    const loadSessions = async () => {
+      try {
+        const response = await fetch("/api/chat-session", {
+          method: "GET",
+          cache: "no-store",
+        })
+        if (!response.ok) {
+          const bodyText = await response.text()
+          throw new Error(bodyText || `Failed to load chats (${response.status})`)
+        }
+
+        const body = (await response.json()) as {
+          sessions?: ChatSessionListItemResponse[]
+        }
+        if (isDisposed) return
+        setSessionList(Array.isArray(body.sessions) ? body.sessions : [])
+      } catch (error) {
+        if (isDisposed) return
+        const message = error instanceof Error ? error.message : String(error)
+        setSessionListError(message)
+      } finally {
+        if (!isDisposed) {
+          setIsSessionListLoading(false)
+        }
+      }
+    }
+
+    loadSessions()
+    return () => {
+      isDisposed = true
+    }
+  }, [sessionId])
 
   useEffect(() => {
     if (!sessionId) {
@@ -465,9 +527,7 @@ function DashboardChatPageContent() {
       return name || `attachment-${index + 1}.pdf`
     })
     .filter((name) => name.length > 0)
-  const createdAtText = effectiveSession?.created_at
-    ? format(new Date(effectiveSession.created_at), "MMM d, yyyy h:mm a")
-    : null
+  const createdAtText = formatDateTime(effectiveSession?.created_at)
 
   const rawGuideMarkdown = useMemo(() => {
     if (!effectiveSession) return ""
@@ -519,9 +579,7 @@ function DashboardChatPageContent() {
     effectiveSession?.status === "completed"
       ? "rounded-lg border border-emerald-300/60 bg-emerald-50/80 p-3 text-sm"
       : "rounded-lg border border-brand-gold/40 bg-brand-gold/10 p-3 text-sm"
-  const resolvedErrorText = sessionId
-    ? errorText
-    : "Missing session id in URL. Open this page from the extension."
+  const resolvedErrorText = errorText
   const isSessionLoading = Boolean(
     sessionId && !effectiveSession && !resolvedErrorText && !isPolling,
   )
@@ -553,6 +611,98 @@ function DashboardChatPageContent() {
       window.removeEventListener("keydown", handleEscape)
     }
   }, [isContextDialogOpen])
+
+  function handleOpenSession(nextSessionId: string) {
+    router.push(`/dashboard/chat?session=${encodeURIComponent(nextSessionId)}`)
+  }
+
+  if (!sessionId) {
+    return (
+      <motion.div
+        initial={reduceMotion ? false : { opacity: 0, y: 12 }}
+        animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+        transition={reduceMotion ? undefined : { duration: 0.45, ease: EASE_OUT }}
+        className="relative w-full space-y-6 overflow-hidden rounded-3xl border border-border/60 bg-gradient-to-b from-background via-background to-muted/20 p-4 shadow-[0_30px_90px_-45px_rgba(2,6,23,0.6)] md:p-6"
+      >
+        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(120%_70%_at_50%_-5%,rgba(148,163,184,0.12),transparent_62%),radial-gradient(120%_70%_at_50%_110%,rgba(100,116,139,0.08),transparent_68%)]" />
+
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          transition={reduceMotion ? undefined : { duration: 0.35, ease: EASE_OUT, delay: 0.05 }}
+          className="relative rounded-2xl border border-border/50 bg-card/60 p-4 backdrop-blur"
+        >
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-brand-blue">
+            Dashboard Chat
+          </p>
+          <h1 className="text-3xl font-heading font-bold tracking-tight">Choose a Chat</h1>
+          <p className="text-muted-foreground">
+            Open a previous session to continue with saved messages and assignment context.
+          </p>
+        </motion.div>
+
+        <motion.div
+          initial={reduceMotion ? false : { opacity: 0, y: 10 }}
+          animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+          transition={reduceMotion ? undefined : { duration: 0.4, ease: EASE_OUT, delay: 0.1 }}
+          className="relative"
+        >
+          <Card className="border-border/50 bg-card/90 backdrop-blur">
+            <CardContent className="space-y-3 p-4 sm:p-5">
+              {isSessionListLoading ? (
+                <p className="text-sm text-muted-foreground">Loading chat sessions...</p>
+              ) : null}
+
+              {sessionListError ? (
+                <p className="text-sm text-destructive">{sessionListError}</p>
+              ) : null}
+
+              {!isSessionListLoading && !sessionListError && sessionList.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No chats found yet. Generate a guide from the extension to create your first chat.
+                </p>
+              ) : null}
+
+              <div className="space-y-2">
+                {sessionList.map((item) => {
+                  const updatedAtText = formatDateTime(item.updated_at) || "-"
+                  const dueAtText = formatDateTime(item.context.due_at_iso)
+
+                  return (
+                    <button
+                      key={item.session_id}
+                      type="button"
+                      onClick={() => handleOpenSession(item.session_id)}
+                      className="w-full rounded-xl border border-border/60 bg-background/50 p-3 text-left transition-colors hover:border-brand-blue/40 hover:bg-brand-blue/5"
+                    >
+                      <div className="flex flex-wrap items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold text-foreground">
+                            {item.context.assignment_title || item.title}
+                          </p>
+                          <p className="truncate text-xs text-muted-foreground">
+                            {item.context.course_name || "Unknown course"}
+                          </p>
+                        </div>
+                        <Badge variant="outline" className="capitalize">
+                          {item.status}
+                        </Badge>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                        <span>Updated {updatedAtText}</span>
+                        {dueAtText ? <span>Due {dueAtText}</span> : null}
+                        <span>Attachments: {item.context.attachment_count}</span>
+                      </div>
+                    </button>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+        </motion.div>
+      </motion.div>
+    )
+  }
 
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -628,6 +778,14 @@ function DashboardChatPageContent() {
             type="button"
             variant="outline"
             className="border-border/70 bg-background/70"
+            onClick={() => router.push("/dashboard/chat")}
+          >
+            All Chats
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            className="border-border/70 bg-background/70"
             onClick={() => setIsContextDialogOpen(true)}
             disabled={!payload}
           >
@@ -657,14 +815,7 @@ function DashboardChatPageContent() {
           className="min-w-0"
         >
           <Card className="flex h-[min(72vh,820px)] min-h-[500px] min-w-0 flex-col border-border/50 bg-card/90 shadow-[0_18px_45px_-28px_rgba(15,23,42,0.55)] backdrop-blur">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Bot className="h-4 w-4" />
-              Assistant Output
-            </CardTitle>
-            <CardDescription>Guide generation progress and chat thread.</CardDescription>
-          </CardHeader>
-          <CardContent className="flex min-h-0 flex-1 flex-col gap-3">
+          <CardContent className="flex min-h-0 flex-1 flex-col gap-3 p-4">
             <div ref={threadContainerRef} className="min-h-0 flex-1">
               <ScrollArea className="h-full rounded-xl border border-border/60 bg-gradient-to-b from-muted/15 via-card to-card">
                 <div className="mx-auto min-w-0 w-full max-w-5xl space-y-3 p-4 sm:px-6">
@@ -726,7 +877,7 @@ function DashboardChatPageContent() {
                       transition={reduceMotion ? undefined : { duration: 0.35, ease: EASE_OUT }}
                       className="mx-auto w-full max-w-4xl min-w-0 p-1 text-left text-sm leading-6"
                     >
-                    <div className="[&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_blockquote]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-4 [&_blockquote]:italic [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:mt-6 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_h1:first-child]:mt-0 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:tracking-tight [&_h2:first-child]:mt-0 [&_h3]:mt-4 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:tracking-tight [&_h3:first-child]:mt-0 [&_h4]:mt-4 [&_h4]:text-base [&_h4]:font-semibold [&_li]:my-1 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-3 [&_p]:break-words [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_strong]:font-semibold [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+                    <div className="[&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_blockquote]:my-3 [&_blockquote]:border-l-2 [&_blockquote]:border-border [&_blockquote]:pl-4 [&_blockquote]:italic [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_h1]:mt-6 [&_h1]:text-2xl [&_h1]:font-semibold [&_h1]:tracking-tight [&_h1:first-child]:mt-0 [&_h2]:mt-5 [&_h2]:text-xl [&_h2]:font-semibold [&_h2]:tracking-tight [&_h2:first-child]:mt-0 [&_h3]:mt-4 [&_h3]:text-lg [&_h3]:font-semibold [&_h3]:tracking-tight [&_h3:first-child]:mt-0 [&_h4]:mt-4 [&_h4]:text-base [&_h4]:font-semibold [&_hr]:my-6 [&_li]:my-1 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-3 [&_p]:break-words [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_strong]:font-semibold [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
                       <ReactMarkdown remarkPlugins={[remarkGfm]}>
                         {guideMarkdown}
                       </ReactMarkdown>
@@ -768,7 +919,7 @@ function DashboardChatPageContent() {
                       transition={reduceMotion ? undefined : { duration: 0.24, ease: EASE_OUT }}
                       className={
                         message.sender_role === "user"
-                          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-brand-blue/35 bg-brand-blue/10 px-3 py-2 text-right text-sm text-blue-900 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
+                          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-right text-sm text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
                           : "mx-auto w-full max-w-4xl px-1 py-1 text-left text-sm"
                       }
                     >
@@ -783,7 +934,7 @@ function DashboardChatPageContent() {
                               ))
                             : null}
                           {assistantVisibleText ? (
-                            <div className="min-w-0 [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+                            <div className="min-w-0 [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
                               <ReactMarkdown remarkPlugins={[remarkGfm]}>
                                 {assistantVisibleText}
                               </ReactMarkdown>

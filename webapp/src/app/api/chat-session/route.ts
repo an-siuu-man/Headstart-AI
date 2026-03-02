@@ -3,6 +3,7 @@ import { ensureRuntimeSession, getRuntimeSession } from "@/lib/chat-runtime-stor
 import {
   createPersistedChatSession,
   getPersistedSessionSnapshot,
+  listPersistedChatSessionsForUser,
 } from "@/lib/chat-repository";
 import { startChatSessionRun } from "@/lib/chat-session-runner";
 import { buildSessionDto } from "@/lib/chat-types";
@@ -11,6 +12,45 @@ import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 export const runtime = "nodejs";
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+export async function GET(req: Request) {
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? "";
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  try {
+    const sessions = await listPersistedChatSessionsForUser(userId);
+    const response = NextResponse.json({
+      ok: true,
+      sessions: sessions.map((session) => ({
+        session_id: session.sessionId,
+        assignment_uuid: session.assignmentUuid,
+        title: session.title,
+        status: session.status,
+        created_at: session.createdAt,
+        updated_at: session.updatedAt,
+        context: {
+          assignment_title: session.context.assignmentTitle,
+          course_name: session.context.courseName,
+          due_at_iso: session.context.dueAtISO,
+          attachment_count: session.context.attachmentCount,
+        },
+      })),
+    });
+    if (resolvedUser?.refreshedSession) {
+      applyAuthCookies(response, resolvedUser.refreshedSession);
+    }
+    return response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: "Failed to load chat sessions", detail: message },
+      { status: 500 },
+    );
+  }
+}
 
 export async function POST(req: Request) {
   const body = await req.json();

@@ -30,6 +30,8 @@ type DbAssignment = {
 
 type DbAssignmentSnapshot = {
   id: string;
+  title?: string | null;
+  due_at?: string | null;
   raw_payload: unknown;
 };
 
@@ -42,6 +44,7 @@ type DbChatSession = {
   id: string;
   user_id: string;
   assignment_uuid: string;
+  title?: string | null;
   status: ChatSessionStatus;
   created_at: string;
   updated_at: string;
@@ -81,6 +84,14 @@ function toEpoch(value: string) {
 
 function eq(value: string | number | boolean) {
   return `eq.${value}`;
+}
+
+function inList(values: string[]) {
+  const normalized = values
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .map((value) => `"${value.replaceAll('"', "")}"`);
+  return `in.(${normalized.join(",")})`;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -123,6 +134,21 @@ function toOptionalNumber(value: unknown) {
   if (typeof value !== "number" || !Number.isFinite(value)) return null;
   return value;
 }
+
+export type UserChatSessionListItem = {
+  sessionId: string;
+  assignmentUuid: string;
+  title: string;
+  status: ChatSessionStatus;
+  createdAt: number;
+  updatedAt: number;
+  context: {
+    assignmentTitle: string;
+    courseName: string | null;
+    dueAtISO: string | null;
+    attachmentCount: number;
+  };
+};
 
 function toExternalUserId(userId: string, payload: AssignmentPayload) {
   const payloadUserId =
@@ -469,6 +495,91 @@ export async function assertSessionOwnership(sessionId: string, userId: string) 
   if (!session) return null;
   if (session.user_id !== userId) return null;
   return session;
+}
+
+export async function listPersistedChatSessionsForUser(
+  userId: string,
+  limit = 40,
+): Promise<UserChatSessionListItem[]> {
+  const boundedLimit = Math.max(1, Math.min(100, Math.floor(limit)));
+  const sessions = await selectMany<DbChatSession>({
+    table: "chat_sessions",
+    query: {
+      user_id: eq(userId),
+      select: "id,user_id,assignment_uuid,title,status,created_at,updated_at",
+      order: "updated_at.desc",
+      limit: boundedLimit,
+    },
+  });
+
+  if (sessions.length === 0) {
+    return [];
+  }
+
+  const assignmentUuids = Array.from(
+    new Set(sessions.map((session) => session.assignment_uuid)),
+  );
+  const ingests =
+    assignmentUuids.length > 0
+      ? await selectMany<DbAssignmentIngest>({
+          table: "assignment_ingests",
+          query: {
+            assignment_uuid: inList(assignmentUuids),
+            select: "assignment_uuid,assignment_snapshot_id",
+          },
+        })
+      : [];
+
+  const ingestByAssignmentUuid = new Map(
+    ingests.map((ingest) => [ingest.assignment_uuid, ingest]),
+  );
+  const snapshotIds = Array.from(
+    new Set(ingests.map((ingest) => ingest.assignment_snapshot_id)),
+  );
+  const snapshots =
+    snapshotIds.length > 0
+      ? await selectMany<DbAssignmentSnapshot>({
+          table: "assignment_snapshots",
+          query: {
+            id: inList(snapshotIds),
+            select: "id,title,due_at,raw_payload",
+          },
+        })
+      : [];
+  const snapshotById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
+
+  return sessions.map((session) => {
+    const ingest = ingestByAssignmentUuid.get(session.assignment_uuid);
+    const snapshot = ingest
+      ? snapshotById.get(ingest.assignment_snapshot_id)
+      : undefined;
+    const payload = asObject(snapshot?.raw_payload);
+    const attachmentCount = Array.isArray(payload.pdfAttachments)
+      ? payload.pdfAttachments.length
+      : 0;
+    const assignmentTitle =
+      toOptionalString(snapshot?.title) ??
+      toOptionalString(payload.title) ??
+      toOptionalString(session.title) ??
+      "(untitled assignment)";
+
+    return {
+      sessionId: session.id,
+      assignmentUuid: session.assignment_uuid,
+      title: toOptionalString(session.title) ?? assignmentTitle,
+      status: session.status,
+      createdAt: toEpoch(session.created_at),
+      updatedAt: toEpoch(session.updated_at),
+      context: {
+        assignmentTitle,
+        courseName: toOptionalString(payload.courseName),
+        dueAtISO:
+          toOptionalString(payload.dueAtISO) ??
+          toOptionalString(snapshot?.due_at),
+        attachmentCount,
+      },
+    };
+  });
 }
 
 export async function updateChatSessionStatus(
