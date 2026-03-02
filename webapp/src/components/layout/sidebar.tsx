@@ -40,8 +40,8 @@ export function SidebarContent({
     <div className={cn("flex flex-col h-full", className)}>
       <div
         className={cn(
-          "flex items-center gap-2 border-b p-4 transition-all duration-300",
-          collapsed ? "justify-between px-3" : "justify-between px-4"
+          "flex items-center border-b p-4 transition-all duration-300",
+          collapsed ? "justify-start gap-0 px-4" : "justify-between gap-2 px-4"
         )}
       >
         <div
@@ -64,7 +64,8 @@ export function SidebarContent({
             onClick={onToggleCollapse}
             className={cn(
               "shrink-0 transition-all duration-300",
-              "h-8 w-8"
+              "h-8 w-8",
+              collapsed ? "ml-0" : ""
             )}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           >
@@ -84,7 +85,7 @@ export function SidebarContent({
                 onClick={onClick}
                 className={cn(
                   "flex items-center rounded-md py-2 text-sm font-medium transition-all duration-300",
-                  collapsed ? "justify-center px-2" : "gap-3 px-3",
+                  collapsed ? "justify-start px-3" : "gap-3 px-3",
                   isActive
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:bg-muted hover:text-foreground"
@@ -105,12 +106,12 @@ export function SidebarContent({
         </nav>
       </div>
 
-      <div className="p-4 border-t">
+      <div className={cn("border-t", collapsed ? "p-3" : "p-4")}>
          <Button
             variant="ghost"
             className={cn(
               "w-full text-muted-foreground hover:text-destructive transition-all duration-300",
-              collapsed ? "justify-center px-2" : "justify-start gap-2"
+              collapsed ? "justify-start px-3" : "justify-start gap-2"
             )}
             onClick={onSignOut}
             disabled={isSigningOut}
@@ -155,7 +156,7 @@ export function Sidebar() {
     <aside
       className={cn(
         "sticky top-0 hidden h-screen flex-col border-r bg-card transition-[width] duration-300 ease-out md:flex",
-        collapsed ? "w-20" : "w-64"
+        collapsed ? "w-16" : "w-64"
       )}
     >
       <SidebarContent
