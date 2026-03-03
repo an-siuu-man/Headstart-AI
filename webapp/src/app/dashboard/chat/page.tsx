@@ -1000,7 +1000,7 @@ function DashboardChatPageContent() {
                       transition={reduceMotion ? undefined : { duration: 0.24, ease: EASE_OUT }}
                       className={
                         message.sender_role === "user"
-                          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-right text-[15px] text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
+                          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-left text-[15px] text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
                           : "mx-auto w-full max-w-4xl px-1 py-1 text-left text-[15px]"
                       }
                     >
@@ -1023,7 +1023,7 @@ function DashboardChatPageContent() {
                           ) : null}
                         </div>
                       ) : (
-                        <p className="whitespace-pre-wrap break-words text-right">
+                        <p className="whitespace-pre-wrap break-words text-left">
                           {message.content_text}
                         </p>
                       )}
