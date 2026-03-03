@@ -47,6 +47,43 @@ export async function createChatSession({ payload, userId }, baseUrl) {
   return res.json();
 }
 
+export async function getAssignmentGuideStatus(
+  { courseId, assignmentId, instanceDomain },
+  baseUrl,
+) {
+  const backendBaseUrl = toBaseUrl(baseUrl);
+  const params = new URLSearchParams({
+    course_id: String(courseId),
+    assignment_id: String(assignmentId),
+  });
+  if (typeof instanceDomain === "string" && instanceDomain.trim()) {
+    params.set("instance_domain", instanceDomain.trim().toLowerCase());
+  }
+
+  const res = await fetch(
+    `${backendBaseUrl}/api/assignment-guide-status?${params.toString()}`,
+    {
+      method: "GET",
+      credentials: "include",
+      headers: { Accept: "application/json" },
+    },
+  );
+
+  const rawBody = await res.text();
+
+  if (!res.ok) {
+    throw new Error(`assignment-guide-status failed (${res.status}): ${rawBody.slice(0, 300)}`);
+  }
+
+  try {
+    return JSON.parse(rawBody);
+  } catch {
+    throw new Error(
+      `assignment-guide-status returned non-JSON: ${rawBody.slice(0, 300)}`,
+    );
+  }
+}
+
 export async function runAgent({ assignmentUuid, payload, pdfFiles }, baseUrl) {
   const backendBaseUrl = toBaseUrl(baseUrl);
 

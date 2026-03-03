@@ -19,7 +19,10 @@
  * - Network, storage, and runtime messaging failures are caught and surfaced via HEADSTART_ERROR messages.
  */
 
-import { createChatSession } from "../../clients/webapp-client.js";
+import {
+  createChatSession,
+  getAssignmentGuideStatus,
+} from "../../clients/webapp-client.js";
 import { MESSAGE_TYPES } from "../../shared/contracts/messages.js";
 import { createLogger } from "../../shared/logger.js";
 import { getAssignmentRecord } from "../../storage/assignment-store.js";
@@ -37,6 +40,20 @@ function buildChatUrl(sessionId) {
   return `${base}/dashboard/chat?session=${encodeURIComponent(sessionId)}`;
 }
 
+function getTabHostname(tabUrl) {
+  if (!tabUrl || typeof tabUrl !== "string") return null;
+  try {
+    return new URL(tabUrl).hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+}
+
+function isNoResponseMessagePortError(message) {
+  if (!message || typeof message !== "string") return false;
+  return message.includes("The message port closed before a response was received");
+}
+
 function sendToTabWithLogging(tabId, message, logContext) {
   if (!tabId) {
     log.error(`${logContext}: missing tab id; cannot send message`);
@@ -45,7 +62,14 @@ function sendToTabWithLogging(tabId, message, logContext) {
 
   chrome.tabs.sendMessage(tabId, message, () => {
     if (chrome.runtime.lastError) {
-      log.error(`${logContext}: delivery failed:`, chrome.runtime.lastError.message);
+      const errorMessage = chrome.runtime.lastError.message || "unknown runtime error";
+      if (isNoResponseMessagePortError(errorMessage)) {
+        // One-way messages in the widget do not call sendResponse.
+        // Treat this as delivered to avoid noisy false alarms in console logs.
+        log.debug(`${logContext}: delivered to tab ${tabId} (no response expected)`);
+        return;
+      }
+      log.warn(`${logContext}: delivery warning:`, errorMessage);
       return;
     }
     log.info(`${logContext}: delivered to tab ${tabId}`);
@@ -128,5 +152,58 @@ export async function handleStartHeadstartRun(tab, pageTitle) {
       type: MESSAGE_TYPES.HEADSTART_ERROR,
       error: String(e?.message || e),
     }, "HEADSTART_ERROR");
+  }
+}
+
+export async function handleCheckAssignmentGuideStatus(tab) {
+  const ids = getCanvasIdsFromUrl(tab?.url || "");
+  if (!ids) {
+    return {
+      exists: false,
+      latestSessionId: null,
+      latestSessionUpdatedAt: null,
+      status: null,
+    };
+  }
+
+  const instanceDomain = getTabHostname(tab?.url);
+
+  try {
+    log.info(
+      "Checking existing guide status:",
+      `course=${ids.courseId}`,
+      `assignment=${ids.assignmentId}`,
+      `domain=${instanceDomain ?? "unknown"}`,
+    );
+    const result = await getAssignmentGuideStatus(
+      {
+        courseId: ids.courseId,
+        assignmentId: ids.assignmentId,
+        instanceDomain,
+      },
+      BACKEND_BASE_URL,
+    );
+
+    return {
+      exists: Boolean(result?.exists),
+      latestSessionId:
+        typeof result?.latest_session_id === "string" ? result.latest_session_id : null,
+      latestSessionUpdatedAt:
+        typeof result?.latest_session_updated_at === "number"
+          ? result.latest_session_updated_at
+          : null,
+      status: typeof result?.status === "string" ? result.status : null,
+    };
+  } catch (e) {
+    log.warn(
+      "Existing guide status lookup failed:",
+      e?.message || e,
+    );
+    return {
+      exists: false,
+      latestSessionId: null,
+      latestSessionUpdatedAt: null,
+      status: null,
+    };
   }
 }

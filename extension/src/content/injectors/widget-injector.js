@@ -28,6 +28,33 @@ const SIDEBAR_ID = "headstart-sidebar";
 const TOGGLE_ID = "headstart-toggle-btn";
 const OUTPUT_ID = "headstart-output";
 const WEBAPP_BASE_URL = "http://localhost:3000";
+const STATUS_TONE_CLASSES = [
+  "headstart-sidebar__output--info",
+  "headstart-sidebar__output--success",
+  "headstart-sidebar__output--error",
+];
+const LUCIDE_ICON_PATHS = {
+  rocket: [
+    '<path d="M4.5 16.5c-1.5 1.26-2 5-2 5s3.74-.5 5-2c.71-.84.7-2.13-.09-2.91a2.18 2.18 0 0 0-2.91-.09z"></path>',
+    '<path d="m12 15-3-3a22 22 0 0 1 2-3.95A12.88 12.88 0 0 1 22 2c0 2.72-.78 7.5-6 11a22.35 22.35 0 0 1-4 2z"></path>',
+    '<path d="M9 12H4s.55-3.03 2-4c1.62-1.08 5 0 5 0"></path>',
+    '<path d="M12 15v5s3.03-.55 4-2c1.08-1.62 0-5 0-5"></path>',
+  ],
+  close: [
+    '<path d="M18 6 6 18"></path>',
+    '<path d="m6 6 12 12"></path>',
+  ],
+};
+
+function renderLucideIcon(paths, size = 18, className = "") {
+  const safeSize = Number.isFinite(size) ? Math.max(12, Math.floor(size)) : 18;
+  const safeClassName =
+    typeof className === "string" && className.trim()
+      ? ` class="${className.trim()}"`
+      : "";
+
+  return `<svg${safeClassName} xmlns="http://www.w3.org/2000/svg" width="${safeSize}" height="${safeSize}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths.join("")}</svg>`;
+}
 
 export function injectWidget(assignmentData) {
   if (document.getElementById(SIDEBAR_ID)) {
@@ -55,8 +82,13 @@ function injectToggle() {
   const btn = document.createElement("button");
   btn.id = TOGGLE_ID;
   btn.className = "headstart-toggle";
-  btn.innerHTML = "🚀";
+  btn.innerHTML = renderLucideIcon(
+    LUCIDE_ICON_PATHS.rocket,
+    20,
+    "headstart-toggle__icon",
+  );
   btn.title = "Toggle Headstart AI";
+  btn.setAttribute("aria-label", "Toggle Headstart AI sidebar");
 
   btn.onclick = () => {
     toggleSidebar(!sidebarOpen);
@@ -100,7 +132,11 @@ function injectSidebar(data) {
           <li class="headstart-sidebar__item">
             <div class="headstart-sidebar__item-title">${escapeHtml(a.title)}</div>
             <div class="headstart-sidebar__item-meta">
-              ${a.dueDate ? `Due: ${escapeHtml(formatDateInTimezone(a.dueDate, userTimezone) || a.dueDate)}` : "No due date"}
+              ${
+                a.dueDate
+                  ? `<span class="headstart-sidebar__pill">Due ${escapeHtml(formatDateInTimezone(a.dueDate, userTimezone) || a.dueDate)}</span>`
+                  : `<span class="headstart-sidebar__pill">No due date</span>`
+              }
             </div>
           </li>
         `,
@@ -116,17 +152,24 @@ function injectSidebar(data) {
       <div class="headstart-sidebar__course-label">${escapeHtml(
         data.courseName || "Current Course",
       )}</div>
-      <div class="headstart-sidebar__item">
+      <div class="headstart-sidebar__item headstart-sidebar__item--single">
         <div class="headstart-sidebar__item-title">${escapeHtml(data.title)}</div>
         <div class="headstart-sidebar__item-meta">
-          ${formattedDueDate ? `Due: ${escapeHtml(formattedDueDate)}` : ""}
-          <br>
-          ${data.pointsPossible ? `${escapeHtml(data.pointsPossible)} Points` : ""}
+          ${
+            formattedDueDate
+              ? `<span class="headstart-sidebar__pill">Due ${escapeHtml(formattedDueDate)}</span>`
+              : `<span class="headstart-sidebar__pill">No due date</span>`
+          }
+          ${
+            data.pointsPossible
+              ? `<span class="headstart-sidebar__pill">${escapeHtml(data.pointsPossible)} points</span>`
+              : ""
+          }
         </div>
       </div>
       ${
         data.rubric
-          ? `<div class="headstart-sidebar__item-meta" style="margin-top:6px;">Rubric: ${data.rubric.criteria.length} criteria</div>`
+          ? `<div class="headstart-sidebar__rubric-note">Rubric: ${data.rubric.criteria.length} criteria</div>`
           : ""
       }
     `;
@@ -135,17 +178,22 @@ function injectSidebar(data) {
   sidebar.innerHTML = `
     <div class="headstart-sidebar__header">
       <div class="headstart-sidebar__logo-area">
-        <span style="font-size:18px;">🚀</span>
-        <span class="headstart-sidebar__title">Headstart AI</span>
+        <span class="headstart-sidebar__logo-icon">${renderLucideIcon(LUCIDE_ICON_PATHS.rocket, 16)}</span>
+        <span class="headstart-sidebar__title-wrap">
+          <span class="headstart-sidebar__title">Headstart AI</span>
+          <span class="headstart-sidebar__subtitle">Canvas companion</span>
+        </span>
       </div>
-      <button class="headstart-sidebar__close">&times;</button>
+      <button class="headstart-sidebar__close" aria-label="Close Headstart sidebar">
+        ${renderLucideIcon(LUCIDE_ICON_PATHS.close, 16)}
+      </button>
     </div>
 
     <div class="headstart-sidebar__body">
       <div class="headstart-sidebar__body-content">
         ${contentHtml}
       </div>
-      <div id="${OUTPUT_ID}" class="headstart-sidebar__output" style="display:none;"></div>
+      <div id="${OUTPUT_ID}" class="headstart-sidebar__output"></div>
     </div>
 
     <div class="headstart-sidebar__action-area">
@@ -161,32 +209,26 @@ function injectSidebar(data) {
   const outputEl = sidebar.querySelector(`#${OUTPUT_ID}`);
   const setStatus = (text, tone = "info") => {
     if (!outputEl) return;
-    outputEl.style.display = "block";
-    outputEl.style.whiteSpace = "pre-wrap";
-    outputEl.style.fontSize = "14px";
-    outputEl.style.lineHeight = "1.45";
-    outputEl.style.padding = "12px";
-    outputEl.style.borderRadius = "12px";
-
+    outputEl.classList.add("headstart-sidebar__output--visible");
+    outputEl.classList.remove(...STATUS_TONE_CLASSES);
     if (tone === "error") {
-      outputEl.style.background = "#fef2f2";
-      outputEl.style.color = "#991b1b";
-      outputEl.style.border = "1px solid #fecaca";
+      outputEl.classList.add("headstart-sidebar__output--error");
     } else if (tone === "success") {
-      outputEl.style.background = "#f0fdf4";
-      outputEl.style.color = "#166534";
-      outputEl.style.border = "1px solid #bbf7d0";
+      outputEl.classList.add("headstart-sidebar__output--success");
     } else {
-      outputEl.style.background = "#eff6ff";
-      outputEl.style.color = "#1e3a8a";
-      outputEl.style.border = "1px solid #bfdbfe";
+      outputEl.classList.add("headstart-sidebar__output--info");
     }
-
     outputEl.textContent = stringifySafe(text);
   };
 
   const actionBtn = sidebar.querySelector(".headstart-sidebar__btn");
   let dashboardUrl = null;
+  let singleAssignmentActionLabel = "Generate Guide";
+  const resetSingleAssignmentActionLabel = () => {
+    if (!dashboardUrl) {
+      actionBtn.textContent = singleAssignmentActionLabel;
+    }
+  };
   actionBtn.onclick = () => {
     try {
       animate(
@@ -218,7 +260,7 @@ function injectSidebar(data) {
       log.debug("START_HEADSTART_RUN ack:", resp);
       if (!resp?.ok) {
         actionBtn.disabled = false;
-        actionBtn.textContent = "Generate Guide";
+        resetSingleAssignmentActionLabel();
         setStatus(
           `Unable to start guide generation: ${resp?.error || "unknown error"}`,
           "error",
@@ -233,7 +275,7 @@ function injectSidebar(data) {
     if (msg.type === MESSAGE_TYPES.HEADSTART_ERROR) {
       log.error("HEADSTART_ERROR received:", msg.error);
       actionBtn.disabled = false;
-      actionBtn.textContent = "Generate Guide";
+      resetSingleAssignmentActionLabel();
       setStatus(
         `Unable to start guide generation: ${stringifySafe(msg.error || "Unknown error")}`,
         "error",
@@ -255,11 +297,36 @@ function injectSidebar(data) {
           "success",
         );
       } else {
-        actionBtn.textContent = "Generate Guide";
+        resetSingleAssignmentActionLabel();
         setStatus("Guide request started, but dashboard link was missing.", "error");
       }
     }
   });
+
+  if (!isList) {
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.CHECK_ASSIGNMENT_GUIDE_STATUS },
+      (resp) => {
+        if (chrome.runtime.lastError) {
+          log.warn(
+            "CHECK_ASSIGNMENT_GUIDE_STATUS failed:",
+            chrome.runtime.lastError.message,
+          );
+          return;
+        }
+        if (!resp?.ok || !resp?.exists) {
+          return;
+        }
+
+        singleAssignmentActionLabel = "Generate New Guide";
+        resetSingleAssignmentActionLabel();
+        setStatus(
+          "A guide already exists for this assignment. You can still generate a new guide.",
+          "info",
+        );
+      },
+    );
+  }
 
   document.body.appendChild(sidebar);
 }

@@ -202,7 +202,7 @@ export default function Dashboard() {
         variants={item}
         className="grid gap-4 xl:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)]"
       >
-        <Card className="border-border/60 bg-card/90 shadow-[0_14px_36px_-24px_rgba(15,23,42,0.5)]">
+        <Card className="flex h-full min-h-0 flex-col border-border/60 bg-card/90 shadow-[0_14px_36px_-24px_rgba(15,23,42,0.5)]">
           <CardHeader className="pb-4">
             <div className="flex items-center justify-between">
               <div>
@@ -217,13 +217,13 @@ export default function Dashboard() {
               </Button>
             </div>
           </CardHeader>
-          <CardContent>
+          <CardContent className="flex min-h-0 flex-1 flex-col">
             {dashboardData.upcomingAssignments.length === 0 ? (
               <div className="rounded-xl border border-dashed border-border/80 p-6 text-center text-sm text-muted-foreground">
                 No assignment context available yet.
               </div>
             ) : (
-              <div className="max-h-[calc(3*118px+1.5rem)] space-y-3 overflow-y-auto pr-2">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto pb-2 pr-2">
                 {dashboardData.upcomingAssignments.map((assignment) => {
                     const dueAt = parseIsoDate(assignment.due_at_iso)
                     const isOverdue = dueAt ? dueAt.getTime() < Date.now() : false
@@ -349,4 +349,3 @@ export default function Dashboard() {
     </motion.div>
   )
 }
-

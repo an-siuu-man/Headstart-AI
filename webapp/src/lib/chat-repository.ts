@@ -353,6 +353,9 @@ export type UserChatSessionListItem = {
   context: {
     assignmentTitle: string;
     courseName: string | null;
+    courseId: string | null;
+    assignmentId: string | null;
+    assignmentUrl: string | null;
     dueAtISO: string | null;
     attachmentCount: number;
   };
@@ -980,6 +983,9 @@ export async function listPersistedChatSessionsForUser(
       context: {
         assignmentTitle,
         courseName: toOptionalString(payload.courseName),
+        courseId: toOptionalString(payload.courseId),
+        assignmentId: toOptionalString(payload.assignmentId),
+        assignmentUrl: toOptionalString(payload.url),
         dueAtISO:
           toOptionalString(payload.dueAtISO) ??
           toOptionalString(snapshot?.due_at),
@@ -987,6 +993,177 @@ export async function listPersistedChatSessionsForUser(
       },
     };
   });
+}
+
+export async function findLatestExistingGuideForAssignment(input: {
+  userId: string;
+  courseId: string;
+  assignmentId: string;
+  instanceDomain?: string | null;
+}) {
+  const normalizedCourseId = toOptionalString(input.courseId);
+  const normalizedAssignmentId = toOptionalString(input.assignmentId);
+  const normalizedDomain = toOptionalString(input.instanceDomain)?.toLowerCase() ?? null;
+
+  if (!normalizedCourseId || !normalizedAssignmentId) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const integrationRows = await selectMany<DbLmsIntegration>({
+    table: "lms_integrations",
+    query: {
+      user_id: eq(input.userId),
+      provider: eq("canvas"),
+      ...(normalizedDomain ? { instance_domain: eq(normalizedDomain) } : {}),
+      select: "id,user_id",
+      limit: 200,
+    },
+  });
+  if (integrationRows.length === 0) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const integrationIds = Array.from(new Set(integrationRows.map((row) => row.id)));
+  const courseRows = await selectMany<DbCourse>({
+    table: "courses",
+    query: {
+      integration_id: inList(integrationIds),
+      provider_course_id: eq(normalizedCourseId),
+      select: "id,integration_id",
+      limit: 200,
+    },
+  });
+  if (courseRows.length === 0) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const courseIds = Array.from(new Set(courseRows.map((row) => row.id)));
+  const assignmentRows = await selectMany<DbAssignment>({
+    table: "assignments",
+    query: {
+      course_id: inList(courseIds),
+      provider_assignment_id: eq(normalizedAssignmentId),
+      select: "id,course_id",
+      limit: 200,
+    },
+  });
+  if (assignmentRows.length === 0) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const assignmentIds = Array.from(new Set(assignmentRows.map((row) => row.id)));
+  const snapshotRows = await selectMany<DbAssignmentSnapshot>({
+    table: "assignment_snapshots",
+    query: {
+      assignment_id: inList(assignmentIds),
+      select: "id",
+      limit: 400,
+    },
+  });
+  if (snapshotRows.length === 0) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const snapshotIds = Array.from(new Set(snapshotRows.map((row) => row.id)));
+  const ingestRows = await selectMany<DbAssignmentIngest>({
+    table: "assignment_ingests",
+    query: {
+      assignment_snapshot_id: inList(snapshotIds),
+      select: "assignment_uuid,assignment_snapshot_id",
+      limit: 400,
+    },
+  });
+  if (ingestRows.length === 0) {
+    return {
+      exists: false,
+      latestSessionId: null as string | null,
+      latestSessionUpdatedAt: null as number | null,
+      status: null as ChatSessionStatus | null,
+    };
+  }
+
+  const assignmentUuids = Array.from(new Set(ingestRows.map((row) => row.assignment_uuid)));
+  const latest = await selectFirst<DbChatSession>({
+    table: "chat_sessions",
+    query: {
+      user_id: eq(input.userId),
+      assignment_uuid: inList(assignmentUuids),
+      status: inList(["completed", "archived"]),
+      select: "id,user_id,assignment_uuid,status,created_at,updated_at",
+      order: "updated_at.desc",
+      limit: 1,
+    },
+  });
+
+  if (latest) {
+    return {
+      exists: true,
+      latestSessionId: latest.id,
+      latestSessionUpdatedAt: toEpoch(latest.updated_at),
+      status: latest.status,
+    };
+  }
+
+  // Fallback for legacy records where relational course/assignment ids may be missing:
+  // inspect recent persisted sessions and match by assignment URL-derived ids.
+  const fallbackSessions = await listPersistedChatSessionsForUser(input.userId, 200);
+  const fallbackMatch = fallbackSessions
+    .filter((session) => session.status === "completed" || session.status === "archived")
+    .filter((session) => {
+      const courseMatch = session.context.courseId === normalizedCourseId;
+      const assignmentMatch = session.context.assignmentId === normalizedAssignmentId;
+      if (courseMatch && assignmentMatch) {
+        if (!normalizedDomain) return true;
+        const sessionDomain = extractDomainFromUrl(
+          session.context.assignmentUrl ?? undefined,
+        ).toLowerCase();
+        return sessionDomain === normalizedDomain;
+      }
+
+      const sessionUrl = toOptionalString(session.context.assignmentUrl);
+      if (!sessionUrl) return false;
+      const idsFromUrl = sessionUrl.match(/\/courses\/(\d+)\/assignments\/(\d+)/);
+      if (!idsFromUrl) return false;
+      if (idsFromUrl[1] !== normalizedCourseId || idsFromUrl[2] !== normalizedAssignmentId) {
+        return false;
+      }
+      if (!normalizedDomain) return true;
+      const sessionDomain = extractDomainFromUrl(sessionUrl).toLowerCase();
+      return sessionDomain === normalizedDomain;
+    })
+    .sort((left, right) => right.updatedAt - left.updatedAt)[0];
+
+  return {
+    exists: Boolean(fallbackMatch),
+    latestSessionId: fallbackMatch?.sessionId ?? null,
+    latestSessionUpdatedAt: fallbackMatch?.updatedAt ?? null,
+    status: fallbackMatch?.status ?? null,
+  };
 }
 
 export async function updateChatSessionStatus(

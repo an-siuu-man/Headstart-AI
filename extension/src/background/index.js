@@ -24,7 +24,10 @@ import {
   handleAssignmentData,
   handleAssignmentDetected,
 } from "./handlers/assignment-handlers.js";
-import { handleStartHeadstartRun } from "./workflows/headstart-run-workflow.js";
+import {
+  handleCheckAssignmentGuideStatus,
+  handleStartHeadstartRun,
+} from "./workflows/headstart-run-workflow.js";
 
 const log = createLogger("SW");
 
@@ -64,6 +67,19 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         } catch (e) {
           const err = String(e?.message || e);
           log.error("START_HEADSTART_RUN failed:", err);
+          sendResponse({ ok: false, error: err });
+        }
+      })();
+      break;
+
+    case MESSAGE_TYPES.CHECK_ASSIGNMENT_GUIDE_STATUS:
+      (async () => {
+        try {
+          const status = await handleCheckAssignmentGuideStatus(sender.tab);
+          sendResponse({ ok: true, ...status });
+        } catch (e) {
+          const err = String(e?.message || e);
+          log.error("CHECK_ASSIGNMENT_GUIDE_STATUS failed:", err);
           sendResponse({ ok: false, error: err });
         }
       })();
