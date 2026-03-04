@@ -27,6 +27,8 @@ It is designed for the real pipeline:
 | `lms_integrations` | 1 to many | `courses` |
 | `courses` | many to many (via join) | `auth.users` through `course_enrollments` |
 | `courses` | 1 to many | `assignments` |
+| `assignments` | 1 to many | `assignment_user_states` |
+| `auth.users` | 1 to many | `assignment_user_states` |
 | `assignments` | 1 to many | `assignment_snapshots` |
 | `assignment_snapshots` | 1 to many | `assignment_ingests` |
 | `auth.users` | 1 to many | `chat_sessions` |
@@ -108,7 +110,18 @@ CREATE TABLE public.assignments (
   UNIQUE (course_id, provider_assignment_id)
 );
 
--- 6) Versioned captured assignment payloads from extension/sync
+-- 6) User-specific assignment state (manual submitted toggle)
+CREATE TABLE public.assignment_user_states (
+  assignment_id uuid NOT NULL REFERENCES public.assignments(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  is_submitted boolean NOT NULL DEFAULT false,
+  submitted_at timestamptz,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (assignment_id, user_id)
+);
+
+-- 7) Versioned captured assignment payloads from extension/sync
 CREATE TABLE public.assignment_snapshots (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   assignment_id uuid NOT NULL REFERENCES public.assignments(id) ON DELETE CASCADE,
@@ -127,7 +140,7 @@ CREATE TABLE public.assignment_snapshots (
   UNIQUE (assignment_id, content_hash)
 );
 
--- 7) Ingest call identity (matches assignment_uuid contract)
+-- 8) Ingest call identity (matches assignment_uuid contract)
 CREATE TABLE public.assignment_ingests (
   assignment_uuid uuid PRIMARY KEY,
   assignment_snapshot_id uuid NOT NULL REFERENCES public.assignment_snapshots(id) ON DELETE RESTRICT,
@@ -136,7 +149,7 @@ CREATE TABLE public.assignment_ingests (
   UNIQUE (request_id)
 );
 
--- 8) Persisted chatbot sessions by user and assignment context
+-- 9) Persisted chatbot sessions by user and assignment context
 CREATE TABLE public.chat_sessions (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
@@ -147,7 +160,7 @@ CREATE TABLE public.chat_sessions (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- 9) Ordered messages inside each chat session
+-- 10) Ordered messages inside each chat session
 CREATE TABLE public.chat_messages (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   session_id uuid NOT NULL REFERENCES public.chat_sessions(id) ON DELETE CASCADE,
@@ -160,7 +173,7 @@ CREATE TABLE public.chat_messages (
   UNIQUE (session_id, message_index)
 );
 
--- 10) Run attempts (async-ready)
+-- 11) Run attempts (async-ready)
 CREATE TABLE public.headstart_runs (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   assignment_uuid uuid NOT NULL REFERENCES public.assignment_ingests(assignment_uuid) ON DELETE CASCADE,
@@ -177,7 +190,7 @@ CREATE TABLE public.headstart_runs (
   UNIQUE (assignment_uuid, attempt_no)
 );
 
--- 11) Per-run attached PDF files (input/audit)
+-- 12) Per-run attached PDF files (input/audit)
 CREATE TABLE public.run_pdf_files (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   run_id uuid NOT NULL REFERENCES public.headstart_runs(id) ON DELETE CASCADE,
@@ -191,7 +204,7 @@ CREATE TABLE public.run_pdf_files (
   UNIQUE (run_id, filename, file_sha256)
 );
 
--- 12) Top-level agent output (1 document per successful run)
+-- 13) Top-level agent output (1 document per successful run)
 CREATE TABLE public.headstart_documents (
   id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
   run_id uuid NOT NULL UNIQUE REFERENCES public.headstart_runs(id) ON DELETE CASCADE,
@@ -201,7 +214,7 @@ CREATE TABLE public.headstart_documents (
   updated_at timestamptz NOT NULL DEFAULT now()
 );
 
--- 13) Normalized list outputs from RunAgentResponse
+-- 14) Normalized list outputs from RunAgentResponse
 CREATE TABLE public.doc_key_requirements (
   doc_id uuid NOT NULL REFERENCES public.headstart_documents(id) ON DELETE CASCADE,
   position integer NOT NULL CHECK (position >= 1),
@@ -249,6 +262,7 @@ For each table, every non-trivial functional dependency has a determinant that i
 - `courses`: `id` key; natural candidate key `(integration_id, provider_course_id)`.
 - `course_enrollments`: `id` key; natural candidate key `(course_id, user_id)`.
 - `assignments`: `id` key; natural candidate key `(course_id, provider_assignment_id)`.
+- `assignment_user_states`: natural candidate key `(assignment_id, user_id)`.
 - `assignment_snapshots`: `id` key; alternate candidate key `(assignment_id, content_hash)`.
 - `assignment_ingests`: `assignment_uuid` key.
 - `chat_sessions`: `id` key.

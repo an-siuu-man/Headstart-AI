@@ -60,6 +60,15 @@ erDiagram
     TIMESTAMPTZ updated_at
   }
 
+  ASSIGNMENT_USER_STATES {
+    UUID assignment_id PK, FK
+    UUID user_id PK, FK
+    BOOLEAN is_submitted
+    TIMESTAMPTZ submitted_at
+    TIMESTAMPTZ created_at
+    TIMESTAMPTZ updated_at
+  }
+
   ASSIGNMENT_SNAPSHOTS {
     UUID id PK
     UUID assignment_id FK
@@ -179,6 +188,8 @@ erDiagram
   AUTH_USERS ||--o{ COURSE_ENROLLMENTS : enrolled_in
   COURSES ||--o{ COURSE_ENROLLMENTS : has_members
   COURSES ||--o{ ASSIGNMENTS : contains
+  AUTH_USERS ||--o{ ASSIGNMENT_USER_STATES : sets_assignment_state
+  ASSIGNMENTS ||--o{ ASSIGNMENT_USER_STATES : has_user_state
   ASSIGNMENTS ||--o{ ASSIGNMENT_SNAPSHOTS : versioned_as
   ASSIGNMENT_SNAPSHOTS ||--o{ ASSIGNMENT_INGESTS : ingested_as
   AUTH_USERS ||--o{ CHAT_SESSIONS : owns

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  listAssignmentSubmissionStatesForUser,
   listPersistedChatSessionsForUser,
   type UserChatSessionListItem,
 } from "@/lib/chat-repository";
@@ -19,6 +20,9 @@ function mapGuideStatus(
 }
 
 function normalizeAssignmentKey(item: UserChatSessionListItem) {
+  if (item.context.assignmentRecordId) {
+    return item.context.assignmentRecordId;
+  }
   const title = item.context.assignmentTitle.trim().toLowerCase();
   const course = (item.context.courseName ?? "").trim().toLowerCase();
   const due = item.context.dueAtISO ?? "";
@@ -40,6 +44,17 @@ export async function GET(req: Request) {
 
   try {
     const sessions = await listPersistedChatSessionsForUser(userId, 100);
+    const assignmentRecordIds = Array.from(
+      new Set(
+        sessions
+          .map((session) => session.context.assignmentRecordId)
+          .filter((value): value is string => typeof value === "string" && value.length > 0),
+      ),
+    );
+    const submissionStates = await listAssignmentSubmissionStatesForUser(
+      userId,
+      assignmentRecordIds,
+    );
 
     const guides = sessions.slice(0, 8).map((session) => ({
       id: session.sessionId,
@@ -56,12 +71,15 @@ export async function GET(req: Request) {
       string,
       {
         id: string;
+        assignment_id: string | null;
         title: string;
         course_name: string | null;
         due_at_iso: string | null;
         latest_session_id: string;
         updated_at: number;
         priority: "High" | "Medium" | "Low";
+        is_submitted: boolean;
+        submitted_at: string | null;
       }
     >();
 
@@ -70,27 +88,37 @@ export async function GET(req: Request) {
       if (assignmentByKey.has(key)) continue;
 
       const dueAt = toTimestamp(session.context.dueAtISO);
+      const submissionState = session.context.assignmentRecordId
+        ? submissionStates.get(session.context.assignmentRecordId)
+        : undefined;
+      const isSubmitted = submissionState?.isSubmitted ?? false;
       const now = Date.now();
       const hoursUntilDue = dueAt == null ? null : (dueAt - now) / (1000 * 60 * 60);
       let priority: "High" | "Medium" | "Low" = "Low";
-      if (hoursUntilDue != null) {
+      if (!isSubmitted && hoursUntilDue != null) {
         if (hoursUntilDue <= 48) priority = "High";
         else if (hoursUntilDue <= 24 * 7) priority = "Medium";
       }
 
       assignmentByKey.set(key, {
         id: key,
+        assignment_id: session.context.assignmentRecordId,
         title: session.context.assignmentTitle,
         course_name: session.context.courseName,
         due_at_iso: session.context.dueAtISO,
         latest_session_id: session.sessionId,
         updated_at: session.updatedAt,
         priority,
+        is_submitted: isSubmitted,
+        submitted_at: submissionState?.submittedAt ?? null,
       });
     }
 
     const assignments = Array.from(assignmentByKey.values())
       .sort((left, right) => {
+        if (left.is_submitted !== right.is_submitted) {
+          return left.is_submitted ? 1 : -1;
+        }
         const leftDue = toTimestamp(left.due_at_iso);
         const rightDue = toTimestamp(right.due_at_iso);
         if (leftDue == null && rightDue == null) {

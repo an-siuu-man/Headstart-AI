@@ -1,10 +1,16 @@
 "use client"
 
 import Link from "next/link"
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { motion } from "framer-motion"
 import { format, formatDistanceToNow } from "date-fns"
-import { Search, Filter, MoreVertical, Calendar as CalendarIcon } from "lucide-react"
+import {
+  Search,
+  Filter,
+  MoreVertical,
+  Calendar as CalendarIcon,
+  CheckCircle2,
+} from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
@@ -27,6 +33,7 @@ import { cn } from "@/lib/utils"
 
 type AssignmentItem = {
   id: string
+  assignment_id: string | null
   title: string
   course_name: string | null
   due_at_iso: string | null
@@ -36,6 +43,8 @@ type AssignmentItem = {
   priority: "High" | "Medium" | "Low"
   attachment_count: number
   is_overdue: boolean
+  is_submitted: boolean
+  submitted_at: string | null
 }
 
 const container = {
@@ -78,42 +87,73 @@ export default function AssignmentsPage() {
   const [assignments, setAssignments] = useState<AssignmentItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
+  const [updatingAssignmentId, setUpdatingAssignmentId] = useState<string | null>(null)
 
-  useEffect(() => {
-    let isDisposed = false
-
-    const loadAssignments = async () => {
-      try {
-        setIsLoading(true)
-        const response = await fetch("/api/assignments", {
-          method: "GET",
-          cache: "no-store",
-        })
-        if (!response.ok) {
-          const bodyText = await response.text()
-          throw new Error(bodyText || `Failed to load assignments (${response.status})`)
-        }
-        const body = (await response.json()) as { assignments?: AssignmentItem[] }
-        if (isDisposed) return
-        setAssignments(Array.isArray(body.assignments) ? body.assignments : [])
-        setErrorText(null)
-      } catch (error) {
-        if (isDisposed) return
-        const message = error instanceof Error ? error.message : String(error)
-        setAssignments([])
-        setErrorText(message)
-      } finally {
-        if (!isDisposed) {
-          setIsLoading(false)
-        }
+  const loadAssignments = useCallback(async () => {
+    try {
+      setIsLoading(true)
+      const response = await fetch("/api/assignments", {
+        method: "GET",
+        cache: "no-store",
+      })
+      if (!response.ok) {
+        const bodyText = await response.text()
+        throw new Error(bodyText || `Failed to load assignments (${response.status})`)
       }
-    }
-
-    void loadAssignments()
-    return () => {
-      isDisposed = true
+      const body = (await response.json()) as { assignments?: AssignmentItem[] }
+      setAssignments(Array.isArray(body.assignments) ? body.assignments : [])
+      setErrorText(null)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      setAssignments([])
+      setErrorText(message)
+    } finally {
+      setIsLoading(false)
     }
   }, [])
+
+  useEffect(() => {
+    void loadAssignments()
+  }, [loadAssignments])
+
+  const toggleSubmitted = useCallback(
+    async (assignment: AssignmentItem) => {
+      if (!assignment.assignment_id) {
+        setErrorText("Cannot update submission state for this assignment.")
+        return
+      }
+
+      const nextValue = !assignment.is_submitted
+      setUpdatingAssignmentId(assignment.assignment_id)
+      try {
+        const response = await fetch(
+          `/api/assignments/${encodeURIComponent(assignment.assignment_id)}/submission`,
+          {
+            method: "PATCH",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              is_submitted: nextValue,
+            }),
+          },
+        )
+
+        if (!response.ok) {
+          const bodyText = await response.text()
+          throw new Error(bodyText || `Failed to update assignment (${response.status})`)
+        }
+
+        await loadAssignments()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setErrorText(message)
+      } finally {
+        setUpdatingAssignmentId(null)
+      }
+    },
+    [loadAssignments],
+  )
 
   const filteredAssignments = useMemo(() => {
     return assignments.filter((assignment) => {
@@ -189,13 +229,28 @@ export default function AssignmentsPage() {
           <TabsTrigger value="completed">Completed ({completedCount})</TabsTrigger>
         </TabsList>
         <TabsContent value="all" className="mt-4">
-          <AssignmentList assignments={filteredAssignments} isLoading={isLoading} />
+          <AssignmentList
+            assignments={filteredAssignments}
+            isLoading={isLoading}
+            updatingAssignmentId={updatingAssignmentId}
+            onToggleSubmitted={toggleSubmitted}
+          />
         </TabsContent>
         <TabsContent value="pending" className="mt-4">
-          <AssignmentList assignments={filteredAssignments} isLoading={isLoading} />
+          <AssignmentList
+            assignments={filteredAssignments}
+            isLoading={isLoading}
+            updatingAssignmentId={updatingAssignmentId}
+            onToggleSubmitted={toggleSubmitted}
+          />
         </TabsContent>
         <TabsContent value="completed" className="mt-4">
-          <AssignmentList assignments={filteredAssignments} isLoading={isLoading} />
+          <AssignmentList
+            assignments={filteredAssignments}
+            isLoading={isLoading}
+            updatingAssignmentId={updatingAssignmentId}
+            onToggleSubmitted={toggleSubmitted}
+          />
         </TabsContent>
       </Tabs>
     </div>
@@ -205,9 +260,13 @@ export default function AssignmentsPage() {
 function AssignmentList({
   assignments,
   isLoading,
+  updatingAssignmentId,
+  onToggleSubmitted,
 }: {
   assignments: AssignmentItem[]
   isLoading: boolean
+  updatingAssignmentId: string | null
+  onToggleSubmitted: (assignment: AssignmentItem) => Promise<void>
 }) {
   if (isLoading) {
     return (
@@ -269,6 +328,15 @@ function AssignmentList({
                         Open chat
                       </Link>
                     </DropdownMenuItem>
+                    <DropdownMenuItem
+                      disabled={!assignment.assignment_id || updatingAssignmentId === assignment.assignment_id}
+                      onSelect={(event) => {
+                        event.preventDefault()
+                        void onToggleSubmitted(assignment)
+                      }}
+                    >
+                      {assignment.is_submitted ? "Mark as not submitted" : "Mark as submitted"}
+                    </DropdownMenuItem>
                   </DropdownMenuContent>
                 </DropdownMenu>
               </CardHeader>
@@ -282,21 +350,28 @@ function AssignmentList({
                   </Badge>
                 </div>
 
-                <div
-                  className={cn(
-                    "flex items-center gap-1 text-sm",
-                    assignment.is_overdue ? "text-destructive" : "text-muted-foreground",
-                  )}
-                >
-                  <CalendarIcon className="h-4 w-4" />
-                  {dueAt ? (
-                    <span>
-                      {format(dueAt, "MMM d, yyyy h:mm a")} ({formatDistanceToNow(dueAt, { addSuffix: true })})
-                    </span>
-                  ) : (
-                    <span>No due date available</span>
-                  )}
-                </div>
+                {assignment.is_submitted ? (
+                  <div className="flex items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm font-semibold text-emerald-800">
+                    <CheckCircle2 className="h-4 w-4" />
+                    <span>Submitted</span>
+                  </div>
+                ) : (
+                  <div
+                    className={cn(
+                      "flex items-center gap-1 text-sm",
+                      assignment.is_overdue ? "text-destructive" : "text-muted-foreground",
+                    )}
+                  >
+                    <CalendarIcon className="h-4 w-4" />
+                    {dueAt ? (
+                      <span>
+                        {format(dueAt, "MMM d, yyyy h:mm a")} ({formatDistanceToNow(dueAt, { addSuffix: true })})
+                      </span>
+                    ) : (
+                      <span>No due date available</span>
+                    )}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </motion.div>

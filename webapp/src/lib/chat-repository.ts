@@ -34,6 +34,7 @@ type DbAssignment = {
 
 type DbAssignmentSnapshot = {
   id: string;
+  assignment_id?: string | null;
   title?: string | null;
   due_at?: string | null;
   raw_payload: unknown;
@@ -91,6 +92,14 @@ type DbHeadstartDocument = {
   id: string;
   run_id: string;
   description: string;
+};
+
+type DbAssignmentUserState = {
+  assignment_id: string;
+  user_id: string;
+  is_submitted: boolean;
+  submitted_at?: string | null;
+  updated_at?: string;
 };
 
 type SnapshotAttachmentPayload = {
@@ -351,6 +360,7 @@ export type UserChatSessionListItem = {
   createdAt: number;
   updatedAt: number;
   context: {
+    assignmentRecordId: string | null;
     assignmentTitle: string;
     courseName: string | null;
     courseId: string | null;
@@ -950,7 +960,7 @@ export async function listPersistedChatSessionsForUser(
           table: "assignment_snapshots",
           query: {
             id: inList(snapshotIds),
-            select: "id,title,due_at,raw_payload",
+            select: "id,assignment_id,title,due_at,raw_payload",
           },
         })
       : [];
@@ -981,6 +991,7 @@ export async function listPersistedChatSessionsForUser(
       createdAt: toEpoch(session.created_at),
       updatedAt: toEpoch(session.updated_at),
       context: {
+        assignmentRecordId: toOptionalString(snapshot?.assignment_id),
         assignmentTitle,
         courseName: toOptionalString(payload.courseName),
         courseId: toOptionalString(payload.courseId),
@@ -1163,6 +1174,109 @@ export async function findLatestExistingGuideForAssignment(input: {
     latestSessionId: fallbackMatch?.sessionId ?? null,
     latestSessionUpdatedAt: fallbackMatch?.updatedAt ?? null,
     status: fallbackMatch?.status ?? null,
+  };
+}
+
+export async function listAssignmentSubmissionStatesForUser(
+  userId: string,
+  assignmentIds: string[],
+) {
+  const normalizedIds = Array.from(
+    new Set(
+      assignmentIds
+        .map((value) => value.trim())
+        .filter((value) => value.length > 0),
+    ),
+  );
+
+  if (normalizedIds.length === 0) {
+    return new Map<string, { isSubmitted: boolean; submittedAt: string | null }>();
+  }
+
+  const rows = await selectMany<DbAssignmentUserState>({
+    table: "assignment_user_states",
+    query: {
+      user_id: eq(userId),
+      assignment_id: inList(normalizedIds),
+      select: "assignment_id,user_id,is_submitted,submitted_at,updated_at",
+      limit: normalizedIds.length,
+    },
+  });
+
+  return new Map(
+    rows.map((row) => [
+      row.assignment_id,
+      {
+        isSubmitted: Boolean(row.is_submitted),
+        submittedAt: toOptionalString(row.submitted_at) ?? null,
+      },
+    ]),
+  );
+}
+
+async function userOwnsAssignment(userId: string, assignmentId: string) {
+  const assignment = await selectFirst<DbAssignment>({
+    table: "assignments",
+    query: {
+      id: eq(assignmentId),
+      select: "id,course_id",
+      limit: 1,
+    },
+  });
+  if (!assignment) return false;
+
+  const course = await selectFirst<DbCourse>({
+    table: "courses",
+    query: {
+      id: eq(assignment.course_id),
+      select: "id,integration_id",
+      limit: 1,
+    },
+  });
+  if (!course) return false;
+
+  const integration = await selectFirst<DbLmsIntegration>({
+    table: "lms_integrations",
+    query: {
+      id: eq(course.integration_id),
+      user_id: eq(userId),
+      select: "id,user_id",
+      limit: 1,
+    },
+  });
+
+  return Boolean(integration);
+}
+
+export async function setAssignmentSubmittedStateForUser(input: {
+  userId: string;
+  assignmentId: string;
+  isSubmitted: boolean;
+}) {
+  const owned = await userOwnsAssignment(input.userId, input.assignmentId);
+  if (!owned) {
+    return null;
+  }
+
+  const submittedAt = input.isSubmitted ? nowIso() : null;
+  const row = await upsertSingle<DbAssignmentUserState>({
+    table: "assignment_user_states",
+    onConflict: "assignment_id,user_id",
+    rows: [
+      {
+        assignment_id: input.assignmentId,
+        user_id: input.userId,
+        is_submitted: input.isSubmitted,
+        submitted_at: submittedAt,
+        updated_at: nowIso(),
+      },
+    ],
+  });
+
+  return {
+    assignmentId: row.assignment_id,
+    isSubmitted: Boolean(row.is_submitted),
+    submittedAt: toOptionalString(row.submitted_at) ?? null,
   };
 }
 

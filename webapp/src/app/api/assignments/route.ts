@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import {
+  listAssignmentSubmissionStatesForUser,
   listPersistedChatSessionsForUser,
   type UserChatSessionListItem,
 } from "@/lib/chat-repository";
@@ -17,6 +18,9 @@ function toTimestamp(value: string | null | undefined) {
 }
 
 function normalizeAssignmentKey(item: UserChatSessionListItem) {
+  if (item.context.assignmentRecordId) {
+    return item.context.assignmentRecordId;
+  }
   const title = item.context.assignmentTitle.trim().toLowerCase();
   const course = (item.context.courseName ?? "").trim().toLowerCase();
   const due = item.context.dueAtISO ?? "";
@@ -50,11 +54,23 @@ export async function GET(req: Request) {
 
   try {
     const sessions = await listPersistedChatSessionsForUser(userId, 200);
+    const assignmentRecordIds = Array.from(
+      new Set(
+        sessions
+          .map((session) => session.context.assignmentRecordId)
+          .filter((value): value is string => typeof value === "string" && value.length > 0),
+      ),
+    );
+    const submissionStates = await listAssignmentSubmissionStatesForUser(
+      userId,
+      assignmentRecordIds,
+    );
 
     const assignmentByKey = new Map<
       string,
       {
         id: string;
+        assignment_id: string | null;
         title: string;
         course_name: string | null;
         due_at_iso: string | null;
@@ -64,6 +80,8 @@ export async function GET(req: Request) {
         priority: AssignmentPriority;
         attachment_count: number;
         is_overdue: boolean;
+        is_submitted: boolean;
+        submitted_at: string | null;
       }
     >();
 
@@ -73,22 +91,32 @@ export async function GET(req: Request) {
 
       const status = mapAssignmentStatus(session.status);
       const dueAt = toTimestamp(session.context.dueAtISO);
+      const submissionState = session.context.assignmentRecordId
+        ? submissionStates.get(session.context.assignmentRecordId)
+        : undefined;
+      const isSubmitted = submissionState?.isSubmitted ?? false;
       assignmentByKey.set(key, {
         id: key,
+        assignment_id: session.context.assignmentRecordId,
         title: session.context.assignmentTitle,
         course_name: session.context.courseName,
         due_at_iso: session.context.dueAtISO,
         latest_session_id: session.sessionId,
         latest_session_updated_at: session.updatedAt,
         status,
-        priority: derivePriority(session.context.dueAtISO),
+        priority: isSubmitted ? "Low" : derivePriority(session.context.dueAtISO),
         attachment_count: session.context.attachmentCount,
         is_overdue:
-          dueAt != null && dueAt < Date.now() && status !== "Completed",
+          !isSubmitted && dueAt != null && dueAt < Date.now() && status !== "Completed",
+        is_submitted: isSubmitted,
+        submitted_at: submissionState?.submittedAt ?? null,
       });
     }
 
     const assignments = Array.from(assignmentByKey.values()).sort((left, right) => {
+      if (left.is_submitted !== right.is_submitted) {
+        return left.is_submitted ? 1 : -1;
+      }
       const leftDue = toTimestamp(left.due_at_iso);
       const rightDue = toTimestamp(right.due_at_iso);
       if (leftDue == null && rightDue == null) {
