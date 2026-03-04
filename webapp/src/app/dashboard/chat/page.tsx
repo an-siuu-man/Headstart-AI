@@ -89,6 +89,15 @@ type ChatSessionListItemResponse = {
   }
 }
 
+type ChatSessionAssignmentGroup = {
+  groupKey: string
+  assignmentTitle: string
+  courseName: string | null
+  dueAtISO: string | null
+  latestUpdatedAt: number
+  sessions: ChatSessionListItemResponse[]
+}
+
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
 const THINK_OPEN_TAG = "<think>"
 const THINK_CLOSE_TAG = "</think>"
@@ -561,6 +570,58 @@ function DashboardChatPageContent() {
     })
     .filter((name) => name.length > 0)
   const createdAtText = formatDateTime(effectiveSession?.created_at)
+  const groupedSessionList = useMemo(() => {
+    const grouped = new Map<string, ChatSessionAssignmentGroup>()
+
+    for (const item of sessionList) {
+      const rawAssignmentTitle = (item.context.assignment_title || item.title || "").trim()
+      const assignmentTitle = rawAssignmentTitle || "(untitled assignment)"
+      const normalizedAssignmentTitle = assignmentTitle
+        .toLocaleLowerCase()
+        .replace(/\s+/g, " ")
+        .trim()
+      const incomingCourseName = item.context.course_name?.trim() || null
+      const groupKey =
+        normalizedAssignmentTitle && normalizedAssignmentTitle !== "(untitled assignment)"
+          ? normalizedAssignmentTitle
+          : `untitled::${item.assignment_uuid || item.session_id}`
+      const existingGroup = grouped.get(groupKey)
+
+      if (existingGroup) {
+        existingGroup.sessions.push(item)
+        existingGroup.latestUpdatedAt = Math.max(existingGroup.latestUpdatedAt, item.updated_at)
+        if (!existingGroup.courseName && incomingCourseName) {
+          existingGroup.courseName = incomingCourseName
+        } else if (
+          existingGroup.courseName &&
+          incomingCourseName &&
+          existingGroup.courseName !== "Multiple courses" &&
+          existingGroup.courseName.toLocaleLowerCase() !== incomingCourseName.toLocaleLowerCase()
+        ) {
+          existingGroup.courseName = "Multiple courses"
+        }
+        if (!existingGroup.dueAtISO && item.context.due_at_iso) {
+          existingGroup.dueAtISO = item.context.due_at_iso
+        }
+      } else {
+        grouped.set(groupKey, {
+          groupKey,
+          assignmentTitle,
+          courseName: incomingCourseName,
+          dueAtISO: item.context.due_at_iso,
+          latestUpdatedAt: item.updated_at,
+          sessions: [item],
+        })
+      }
+    }
+
+    return Array.from(grouped.values())
+      .map((group) => ({
+        ...group,
+        sessions: group.sessions.slice().sort((left, right) => right.updated_at - left.updated_at),
+      }))
+      .sort((left, right) => right.latestUpdatedAt - left.latestUpdatedAt)
+  }, [sessionList])
 
   const rawGuideMarkdown = useMemo(() => {
     if (!effectiveSession) return ""
@@ -737,39 +798,53 @@ function DashboardChatPageContent() {
                     variants={CHAT_LIST_CONTAINER_VARIANTS}
                     initial={reduceMotion ? false : "hidden"}
                     animate={reduceMotion ? undefined : "show"}
-                    className="space-y-2"
+                    className="space-y-3"
                   >
-                    {sessionList.map((item) => {
-                      const updatedAtText = formatDateTime(item.updated_at) || "-"
-                      const dueAtText = formatDateTime(item.context.due_at_iso)
-
+                    {groupedSessionList.map((group) => {
                       return (
-                        <motion.button
-                          key={item.session_id}
-                          type="button"
+                        <motion.section
+                          key={group.groupKey}
                           variants={CHAT_LIST_ITEM_VARIANTS}
-                          onClick={() => handleOpenSession(item.session_id)}
-                          className="w-full rounded-xl border border-border/60 bg-background/50 p-3 text-left transition-colors hover:border-brand-blue/40 hover:bg-brand-blue/5"
+                          className="space-y-2"
                         >
-                          <div className="flex flex-wrap items-start justify-between gap-2">
-                            <div className="min-w-0">
-                              <p className="truncate text-sm font-semibold text-foreground">
-                                {item.context.assignment_title || item.title}
-                              </p>
-                              <p className="truncate text-xs text-muted-foreground">
-                                {item.context.course_name || "Unknown course"}
-                              </p>
-                            </div>
-                            <Badge variant="outline" className="capitalize">
-                              {item.status}
-                            </Badge>
+                          <p className="truncate text-sm font-semibold text-foreground">
+                            {group.assignmentTitle}
+                          </p>
+
+                          <div className="space-y-2">
+                            {group.sessions.map((item) => {
+                              const updatedAtText = formatDateTime(item.updated_at) || "-"
+                              const normalizedTitle = item.title.trim()
+                              const sessionLabel =
+                                normalizedTitle && normalizedTitle !== group.assignmentTitle
+                                  ? normalizedTitle
+                                  : "Chat session"
+
+                              return (
+                                <motion.button
+                                  key={item.session_id}
+                                  type="button"
+                                  variants={CHAT_LIST_ITEM_VARIANTS}
+                                  onClick={() => handleOpenSession(item.session_id)}
+                                  className="w-full rounded-lg border border-border/60 bg-background/60 p-3 text-left transition-colors hover:border-brand-blue/40 hover:bg-brand-blue/5"
+                                >
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <p className="truncate text-sm font-medium text-foreground">
+                                      {sessionLabel}
+                                    </p>
+                                    <Badge variant="outline" className="capitalize">
+                                      {item.status}
+                                    </Badge>
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                                    <span>Updated {updatedAtText}</span>
+                                    <span>Attachments: {item.context.attachment_count}</span>
+                                  </div>
+                                </motion.button>
+                              )
+                            })}
                           </div>
-                          <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                            <span>Updated {updatedAtText}</span>
-                            {dueAtText ? <span>Due {dueAtText}</span> : null}
-                            <span>Attachments: {item.context.attachment_count}</span>
-                          </div>
-                        </motion.button>
+                        </motion.section>
                       )
                     })}
                   </motion.div>
