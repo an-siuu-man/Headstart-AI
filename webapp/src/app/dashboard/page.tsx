@@ -62,7 +62,8 @@ const item = {
   show: { opacity: 1, y: 0 },
 }
 
-const dashboardListScrollClass = "max-h-[calc(3*118px+1.5rem)] space-y-3 overflow-y-auto pr-2"
+const dashboardListScrollClass =
+  "max-h-[calc(3*118px+3rem)] space-y-3 overflow-y-auto px-3 py-3"
 
 type DashboardStatTone = "amber" | "emerald" | "sky" | "red"
 
@@ -315,7 +316,7 @@ export default function Dashboard() {
                 <CardDescription>Upcoming work extracted from your saved contexts.</CardDescription>
               </div>
               <Button asChild variant="ghost" size="sm" className="gap-1.5">
-                <Link href="/dashboard/chat">
+                <Link href="/dashboard/assignments">
                   See All
                   <ArrowUpRight className="h-4 w-4" />
                 </Link>

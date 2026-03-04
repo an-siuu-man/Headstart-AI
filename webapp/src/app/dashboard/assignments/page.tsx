@@ -166,19 +166,19 @@ export default function AssignmentsPage() {
         activeTab === "all"
           ? true
           : activeTab === "pending"
-          ? assignment.status !== "Completed"
+          ? !assignment.is_submitted
           : activeTab === "completed"
-          ? assignment.status === "Completed"
+          ? assignment.is_submitted
           : true
       return matchesSearch && matchesTab
     })
   }, [activeTab, assignments, searchQuery])
 
   const pendingCount = assignments.filter(
-    (assignment) => assignment.status !== "Completed",
+    (assignment) => !assignment.is_submitted,
   ).length
   const completedCount = assignments.filter(
-    (assignment) => assignment.status === "Completed",
+    (assignment) => assignment.is_submitted,
   ).length
 
   return (

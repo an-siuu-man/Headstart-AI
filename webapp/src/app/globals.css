@@ -220,11 +220,7 @@
     inset: 0;
     z-index: 0;
     pointer-events: none;
-    background:
-      radial-gradient(1200px 700px at 5% -12%, rgba(56, 189, 248, 0.18) 0%, rgba(56, 189, 248, 0.04) 45%, transparent 72%),
-      radial-gradient(1000px 620px at 95% -18%, rgba(16, 185, 129, 0.16) 0%, rgba(16, 185, 129, 0.05) 42%, transparent 70%),
-      radial-gradient(760px 540px at 50% 112%, rgba(249, 115, 22, 0.13) 0%, rgba(249, 115, 22, 0.04) 40%, transparent 72%),
-      linear-gradient(180deg, rgba(250, 252, 255, 0.82) 0%, rgba(247, 250, 255, 0.74) 36%, rgba(245, 248, 255, 0.88) 100%);
+    background: rgba(248, 250, 252, 0.76);
   }
 
   .dashboard-theme-noise {
@@ -232,33 +228,23 @@
     inset: 0;
     z-index: 1;
     pointer-events: none;
-    opacity: 0.45;
-    background-image:
-      linear-gradient(rgba(15, 23, 42, 0.03) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(15, 23, 42, 0.025) 1px, transparent 1px);
-    background-size: 46px 46px;
-    mask-image: linear-gradient(to bottom, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.2) 65%, transparent 100%);
+    opacity: 0;
+    background-image: none;
+    mask-image: none;
   }
 
   .dark .dashboard-theme-backdrop {
-    background:
-      radial-gradient(1200px 700px at 2% -16%, rgba(56, 189, 248, 0.2) 0%, rgba(56, 189, 248, 0.08) 40%, transparent 72%),
-      radial-gradient(960px 620px at 92% -20%, rgba(16, 185, 129, 0.18) 0%, rgba(16, 185, 129, 0.06) 42%, transparent 74%),
-      radial-gradient(780px 520px at 50% 116%, rgba(251, 191, 36, 0.12) 0%, rgba(251, 191, 36, 0.05) 38%, transparent 72%),
-      linear-gradient(180deg, rgba(8, 15, 26, 0.9) 0%, rgba(8, 14, 24, 0.78) 42%, rgba(8, 13, 21, 0.9) 100%);
+    background: rgba(8, 15, 26, 0.84);
   }
 
   .dark .dashboard-theme-noise {
-    opacity: 0.38;
-    background-image:
-      linear-gradient(rgba(148, 163, 184, 0.075) 1px, transparent 1px),
-      linear-gradient(90deg, rgba(148, 163, 184, 0.05) 1px, transparent 1px);
+    opacity: 0;
+    background-image: none;
   }
 
   .dashboard-theme-main [data-slot="card"] {
     border-color: rgba(148, 163, 184, 0.3);
-    background:
-      linear-gradient(160deg, rgba(255, 255, 255, 0.88) 0%, rgba(250, 252, 255, 0.86) 42%, rgba(245, 249, 255, 0.92) 100%);
+    background: rgba(252, 254, 255, 0.9);
     box-shadow:
       0 22px 46px -36px rgba(15, 23, 42, 0.58),
       0 1px 0 rgba(255, 255, 255, 0.78) inset;
@@ -267,8 +253,7 @@
 
   .dark .dashboard-theme-main [data-slot="card"] {
     border-color: rgba(148, 163, 184, 0.24);
-    background:
-      linear-gradient(155deg, rgba(17, 25, 39, 0.78) 0%, rgba(14, 22, 36, 0.82) 45%, rgba(12, 20, 34, 0.8) 100%);
+    background: rgba(14, 22, 36, 0.82);
     box-shadow:
       0 28px 54px -42px rgba(2, 8, 23, 0.92),
       0 1px 0 rgba(148, 163, 184, 0.16) inset;

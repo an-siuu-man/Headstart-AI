@@ -78,6 +78,7 @@ type ChatSessionListItemResponse = {
   session_id: string
   assignment_uuid: string
   title: string
+  last_user_message?: string | null
   status: ChatSessionStatus
   created_at: number
   updated_at: number
@@ -814,11 +815,11 @@ function DashboardChatPageContent() {
                           <div className="space-y-2">
                             {group.sessions.map((item) => {
                               const updatedAtText = formatDateTime(item.updated_at) || "-"
-                              const normalizedTitle = item.title.trim()
                               const sessionLabel =
-                                normalizedTitle && normalizedTitle !== group.assignmentTitle
-                                  ? normalizedTitle
-                                  : "Chat session"
+                                typeof item.last_user_message === "string" &&
+                                item.last_user_message.trim().length > 0
+                                  ? item.last_user_message.trim()
+                                  : "Chat Session"
 
                               return (
                                 <motion.button
@@ -891,6 +892,17 @@ function DashboardChatPageContent() {
         )
       }
 
+      setSessionList((previous) =>
+        previous.map((item) =>
+          item.session_id === effectiveSession.session_id
+            ? {
+                ...item,
+                last_user_message: text,
+                updated_at: Date.now(),
+              }
+            : item,
+        ),
+      )
       setDraft("")
       requestAnimationFrame(() => {
         scrollThreadToBottom("smooth")

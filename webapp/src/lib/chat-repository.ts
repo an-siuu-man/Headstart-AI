@@ -81,6 +81,12 @@ type DbChatMessage = {
   created_at: string;
 };
 
+type DbChatMessageListPreview = {
+  session_id: string;
+  message_index: number;
+  content_text: string;
+};
+
 type DbHeadstartRun = {
   id: string;
   assignment_uuid: string;
@@ -356,6 +362,7 @@ export type UserChatSessionListItem = {
   sessionId: string;
   assignmentUuid: string;
   title: string;
+  lastUserMessage: string | null;
   status: ChatSessionStatus;
   createdAt: number;
   updatedAt: number;
@@ -934,6 +941,30 @@ export async function listPersistedChatSessionsForUser(
     return [];
   }
 
+  const sessionIds = sessions.map((session) => session.id);
+  const userMessages =
+    sessionIds.length > 0
+      ? await selectMany<DbChatMessageListPreview>({
+          table: "chat_messages",
+          query: {
+            session_id: inList(sessionIds),
+            sender_role: eq("user"),
+            select: "session_id,message_index,content_text",
+            order: "session_id.asc,message_index.desc",
+          },
+        })
+      : [];
+  const lastUserMessageBySessionId = new Map<string, string | null>();
+  for (const message of userMessages) {
+    if (lastUserMessageBySessionId.has(message.session_id)) {
+      continue;
+    }
+    lastUserMessageBySessionId.set(
+      message.session_id,
+      toOptionalString(message.content_text),
+    );
+  }
+
   const assignmentUuids = Array.from(
     new Set(sessions.map((session) => session.assignment_uuid)),
   );
@@ -987,6 +1018,7 @@ export async function listPersistedChatSessionsForUser(
       sessionId: session.id,
       assignmentUuid: session.assignment_uuid,
       title: toOptionalString(session.title) ?? assignmentTitle,
+      lastUserMessage: lastUserMessageBySessionId.get(session.id) ?? null,
       status: session.status,
       createdAt: toEpoch(session.created_at),
       updatedAt: toEpoch(session.updated_at),
