@@ -1,9 +1,10 @@
 import { NextResponse } from "next/server";
 import {
   assertSessionOwnership,
+  deletePersistedChatSessionForUser,
   getPersistedSessionSnapshot,
 } from "@/lib/chat-repository";
-import { getRuntimeSession } from "@/lib/chat-runtime-store";
+import { getRuntimeSession, removeRuntimeSession } from "@/lib/chat-runtime-store";
 import { buildSessionDto } from "@/lib/chat-types";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 
@@ -108,4 +109,53 @@ export async function GET(
     applyAuthCookies(response, resolvedUser.refreshedSession);
   }
   return response;
+}
+
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ sessionId: string }> },
+) {
+  const { sessionId } = await params;
+  const resolvedUser = await resolveRequestUser(req);
+  const userId = resolvedUser?.user.id ?? "";
+
+  if (!userId) {
+    return NextResponse.json({ error: "Authentication required" }, { status: 401 });
+  }
+
+  try {
+    const deleted = await deletePersistedChatSessionForUser({
+      sessionId,
+      userId,
+    });
+
+    if (!deleted) {
+      return NextResponse.json(
+        { error: "session not found or expired" },
+        { status: 404 },
+      );
+    }
+
+    removeRuntimeSession(sessionId);
+
+    const response = NextResponse.json({
+      ok: true,
+      session_id: deleted.sessionId,
+      assignment_uuid: deleted.assignmentUuid,
+      ingest_deleted: deleted.ingestDeleted,
+      snapshot_deleted: deleted.snapshotDeleted,
+      attachment_records_deleted: deleted.attachmentRecordsDeleted,
+      blobs_deleted: deleted.blobsDeleted,
+    });
+    if (resolvedUser?.refreshedSession) {
+      applyAuthCookies(response, resolvedUser.refreshedSession);
+    }
+    return response;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json(
+      { error: "Failed to delete chat session", detail: message },
+      { status: 500 },
+    );
+  }
 }

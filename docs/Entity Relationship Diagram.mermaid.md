@@ -93,6 +93,23 @@ erDiagram
     TIMESTAMPTZ created_at
   }
 
+  STORED_PDF_BLOBS {
+    CHAR64 file_sha256 PK
+    TEXT storage_path
+    INT byte_size
+    TIMESTAMPTZ uploaded_at
+  }
+
+  ASSIGNMENT_SNAPSHOT_FILES {
+    UUID id PK
+    UUID assignment_snapshot_id FK
+    TEXT filename
+    CHAR64 file_sha256 FK
+    TEXT storage_path
+    INT byte_size
+    TIMESTAMPTZ created_at
+  }
+
   CHAT_SESSIONS {
     UUID id PK
     UUID user_id FK
@@ -191,6 +208,8 @@ erDiagram
   AUTH_USERS ||--o{ ASSIGNMENT_USER_STATES : sets_assignment_state
   ASSIGNMENTS ||--o{ ASSIGNMENT_USER_STATES : has_user_state
   ASSIGNMENTS ||--o{ ASSIGNMENT_SNAPSHOTS : versioned_as
+  ASSIGNMENT_SNAPSHOTS ||--o{ ASSIGNMENT_SNAPSHOT_FILES : contains_files
+  STORED_PDF_BLOBS ||--o{ ASSIGNMENT_SNAPSHOT_FILES : references_blob
   ASSIGNMENT_SNAPSHOTS ||--o{ ASSIGNMENT_INGESTS : ingested_as
   AUTH_USERS ||--o{ CHAT_SESSIONS : owns
   ASSIGNMENT_INGESTS ||--o{ CHAT_SESSIONS : context_for

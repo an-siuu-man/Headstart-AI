@@ -13,6 +13,7 @@ import {
   canonicalizeJson,
   extractDomainFromUrl,
   supabaseStorageCreateSignedUrl,
+  supabaseStorageDeleteObject,
   supabaseStorageUploadObject,
   supabaseTableRequest,
 } from "@/lib/supabase-rest";
@@ -79,6 +80,12 @@ type DbChatMessage = {
   content_format: ChatMessageFormat;
   metadata: unknown;
   created_at: string;
+};
+
+type DbChatMessageListPreview = {
+  session_id: string;
+  message_index: number;
+  content_text: string;
 };
 
 type DbHeadstartRun = {
@@ -356,6 +363,7 @@ export type UserChatSessionListItem = {
   sessionId: string;
   assignmentUuid: string;
   title: string;
+  lastUserMessage: string | null;
   status: ChatSessionStatus;
   createdAt: number;
   updatedAt: number;
@@ -478,6 +486,20 @@ async function selectFirst<T>(input: {
 }) {
   const rows = await selectMany<T>(input);
   return rows[0] ?? null;
+}
+
+async function deleteMany(input: {
+  table: string;
+  query: Record<string, string | number | boolean>;
+}) {
+  await supabaseTableRequest<null>({
+    table: input.table,
+    method: "DELETE",
+    query: input.query,
+    headers: {
+      Prefer: "return=minimal",
+    },
+  });
 }
 
 async function getAssignmentIngestByAssignmentUuid(assignmentUuid: string) {
@@ -670,6 +692,65 @@ export async function listSignedSnapshotPdfFiles(
       }),
     })),
   );
+}
+
+async function deleteStoredBlobIfUnreferenced(input: {
+  fileSha256: string;
+  storagePathHint?: string;
+}) {
+  const stillReferencedInSnapshots = await selectFirst<{ file_sha256: string }>({
+    table: "assignment_snapshot_files",
+    query: {
+      file_sha256: eq(input.fileSha256),
+      select: "file_sha256",
+      limit: 1,
+    },
+  });
+  if (stillReferencedInSnapshots) {
+    return false;
+  }
+
+  const stillReferencedInRuns = await selectFirst<{ file_sha256: string }>({
+    table: "run_pdf_files",
+    query: {
+      file_sha256: eq(input.fileSha256),
+      select: "file_sha256",
+      limit: 1,
+    },
+  });
+  if (stillReferencedInRuns) {
+    return false;
+  }
+
+  const blob = await selectFirst<DbStoredPdfBlob>({
+    table: "stored_pdf_blobs",
+    query: {
+      file_sha256: eq(input.fileSha256),
+      select: "file_sha256,storage_path,byte_size,uploaded_at",
+      limit: 1,
+    },
+  });
+
+  const storagePath =
+    toOptionalString(input.storagePathHint) ??
+    toOptionalString(blob?.storage_path) ??
+    null;
+
+  if (storagePath) {
+    await supabaseStorageDeleteObject({
+      bucket: SNAPSHOT_PDF_BUCKET,
+      path: storagePath,
+    });
+  }
+
+  await deleteMany({
+    table: "stored_pdf_blobs",
+    query: {
+      file_sha256: eq(input.fileSha256),
+    },
+  });
+
+  return true;
 }
 
 async function ensureLmsIntegration(userId: string, payload: AssignmentPayload) {
@@ -915,6 +996,123 @@ export async function assertSessionOwnership(sessionId: string, userId: string) 
   return session;
 }
 
+export async function deletePersistedChatSessionForUser(input: {
+  sessionId: string;
+  userId: string;
+}) {
+  const session = await assertSessionOwnership(input.sessionId, input.userId);
+  if (!session) {
+    return null;
+  }
+
+  const ingest = await getAssignmentIngestByAssignmentUuid(session.assignment_uuid);
+  const snapshotId = ingest?.assignment_snapshot_id ?? null;
+
+  const snapshotFiles =
+    snapshotId != null
+      ? await selectMany<DbAssignmentSnapshotFile>({
+          table: "assignment_snapshot_files",
+          query: {
+            assignment_snapshot_id: eq(snapshotId),
+            select: "assignment_snapshot_id,filename,file_sha256,storage_path,byte_size",
+          },
+        })
+      : [];
+
+  await deleteMany({
+    table: "chat_sessions",
+    query: {
+      id: eq(session.id),
+    },
+  });
+
+  let ingestDeleted = false;
+  let snapshotDeleted = false;
+  let attachmentRecordsDeleted = 0;
+  let blobsDeleted = 0;
+
+  const remainingSessionsForAssignmentUuid = await selectFirst<{ id: string }>({
+    table: "chat_sessions",
+    query: {
+      assignment_uuid: eq(session.assignment_uuid),
+      select: "id",
+      limit: 1,
+    },
+  });
+
+  if (!remainingSessionsForAssignmentUuid && ingest) {
+    await deleteMany({
+      table: "assignment_ingests",
+      query: {
+        assignment_uuid: eq(session.assignment_uuid),
+      },
+    });
+    ingestDeleted = true;
+  }
+
+  if (snapshotId) {
+    const remainingIngestsForSnapshot = await selectFirst<{ assignment_uuid: string }>({
+      table: "assignment_ingests",
+      query: {
+        assignment_snapshot_id: eq(snapshotId),
+        select: "assignment_uuid",
+        limit: 1,
+      },
+    });
+
+    if (!remainingIngestsForSnapshot) {
+      if (snapshotFiles.length > 0) {
+        await deleteMany({
+          table: "assignment_snapshot_files",
+          query: {
+            assignment_snapshot_id: eq(snapshotId),
+          },
+        });
+        attachmentRecordsDeleted = snapshotFiles.length;
+      }
+
+      await deleteMany({
+        table: "assignment_snapshots",
+        query: {
+          id: eq(snapshotId),
+        },
+      });
+      snapshotDeleted = true;
+
+      const uniqueFileRefsByHash = new Map<string, string | undefined>();
+      for (const file of snapshotFiles) {
+        const fileSha256 = toOptionalString(file.file_sha256);
+        if (!fileSha256 || uniqueFileRefsByHash.has(fileSha256)) {
+          continue;
+        }
+        uniqueFileRefsByHash.set(
+          fileSha256,
+          toOptionalString(file.storage_path) ?? undefined,
+        );
+      }
+
+      for (const [fileSha256, storagePathHint] of uniqueFileRefsByHash.entries()) {
+        const deleted = await deleteStoredBlobIfUnreferenced({
+          fileSha256,
+          storagePathHint,
+        });
+        if (deleted) {
+          blobsDeleted += 1;
+        }
+      }
+    }
+  }
+
+  return {
+    sessionId: session.id,
+    assignmentUuid: session.assignment_uuid,
+    ingestDeleted,
+    snapshotDeleted,
+    attachmentRecordsDeleted,
+    blobsDeleted,
+  };
+}
+
 export async function listPersistedChatSessionsForUser(
   userId: string,
   limit = 40,
@@ -932,6 +1130,30 @@ export async function listPersistedChatSessionsForUser(
 
   if (sessions.length === 0) {
     return [];
+  }
+
+  const sessionIds = sessions.map((session) => session.id);
+  const userMessages =
+    sessionIds.length > 0
+      ? await selectMany<DbChatMessageListPreview>({
+          table: "chat_messages",
+          query: {
+            session_id: inList(sessionIds),
+            sender_role: eq("user"),
+            select: "session_id,message_index,content_text",
+            order: "session_id.asc,message_index.desc",
+          },
+        })
+      : [];
+  const lastUserMessageBySessionId = new Map<string, string | null>();
+  for (const message of userMessages) {
+    if (lastUserMessageBySessionId.has(message.session_id)) {
+      continue;
+    }
+    lastUserMessageBySessionId.set(
+      message.session_id,
+      toOptionalString(message.content_text),
+    );
   }
 
   const assignmentUuids = Array.from(
@@ -987,6 +1209,7 @@ export async function listPersistedChatSessionsForUser(
       sessionId: session.id,
       assignmentUuid: session.assignment_uuid,
       title: toOptionalString(session.title) ?? assignmentTitle,
+      lastUserMessage: lastUserMessageBySessionId.get(session.id) ?? null,
       status: session.status,
       createdAt: toEpoch(session.created_at),
       updatedAt: toEpoch(session.updated_at),

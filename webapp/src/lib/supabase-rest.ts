@@ -138,6 +138,39 @@ export async function supabaseStorageUploadObject(input: {
   }
 }
 
+export async function supabaseStorageDeleteObject(input: {
+  bucket: string;
+  path: string;
+}) {
+  const { url, serviceRoleKey } = getSupabaseEnv();
+  const encodedPath = encodeStoragePath(input.path);
+  const endpoint = `${url}/storage/v1/object/${encodeURIComponent(input.bucket)}/${encodedPath}`;
+
+  const response = await fetch(endpoint, {
+    method: "DELETE",
+    headers: {
+      ...buildSupabaseAuthHeaders(serviceRoleKey),
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+
+  if (response.status === 404) {
+    return false;
+  }
+
+  if (!response.ok) {
+    const rawText = await response.text();
+    throw new SupabaseRestError(
+      `Supabase storage delete failed (${response.status})`,
+      response.status,
+      safeJsonParse(rawText) ?? rawText,
+    );
+  }
+
+  return true;
+}
+
 export async function supabaseStorageCreateSignedUrl(input: {
   bucket: string;
   path: string;

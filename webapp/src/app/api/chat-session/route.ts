@@ -28,6 +28,7 @@ export async function GET(req: Request) {
         session_id: session.sessionId,
         assignment_uuid: session.assignmentUuid,
         title: session.title,
+        last_user_message: session.lastUserMessage,
         status: session.status,
         created_at: session.createdAt,
         updated_at: session.updatedAt,

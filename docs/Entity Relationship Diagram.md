@@ -30,6 +30,8 @@ It is designed for the real pipeline:
 | `assignments` | 1 to many | `assignment_user_states` |
 | `auth.users` | 1 to many | `assignment_user_states` |
 | `assignments` | 1 to many | `assignment_snapshots` |
+| `assignment_snapshots` | 1 to many | `assignment_snapshot_files` |
+| `stored_pdf_blobs` | 1 to many (by hash) | `assignment_snapshot_files` |
 | `assignment_snapshots` | 1 to many | `assignment_ingests` |
 | `auth.users` | 1 to many | `chat_sessions` |
 | `assignment_ingests` | 1 to many | `chat_sessions` |
@@ -138,6 +140,26 @@ CREATE TABLE public.assignment_snapshots (
   raw_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
   content_hash text NOT NULL,
   UNIQUE (assignment_id, content_hash)
+);
+
+-- 7a) De-duplicated binary blob registry for PDF attachments
+CREATE TABLE public.stored_pdf_blobs (
+  file_sha256 char(64) PRIMARY KEY,
+  storage_path text NOT NULL,
+  byte_size integer CHECK (byte_size IS NULL OR byte_size >= 0),
+  uploaded_at timestamptz
+);
+
+-- 7b) Snapshot-level attachment rows for chat context and replay
+CREATE TABLE public.assignment_snapshot_files (
+  id uuid PRIMARY KEY DEFAULT extensions.gen_random_uuid(),
+  assignment_snapshot_id uuid NOT NULL REFERENCES public.assignment_snapshots(id) ON DELETE CASCADE,
+  filename text NOT NULL,
+  file_sha256 char(64) NOT NULL REFERENCES public.stored_pdf_blobs(file_sha256) ON DELETE RESTRICT,
+  storage_path text NOT NULL,
+  byte_size integer CHECK (byte_size IS NULL OR byte_size >= 0),
+  created_at timestamptz NOT NULL DEFAULT now(),
+  UNIQUE (assignment_snapshot_id, file_sha256, filename)
 );
 
 -- 8) Ingest call identity (matches assignment_uuid contract)
@@ -264,6 +286,8 @@ For each table, every non-trivial functional dependency has a determinant that i
 - `assignments`: `id` key; natural candidate key `(course_id, provider_assignment_id)`.
 - `assignment_user_states`: natural candidate key `(assignment_id, user_id)`.
 - `assignment_snapshots`: `id` key; alternate candidate key `(assignment_id, content_hash)`.
+- `stored_pdf_blobs`: `file_sha256` key.
+- `assignment_snapshot_files`: `id` key; alternate candidate key `(assignment_snapshot_id, file_sha256, filename)`.
 - `assignment_ingests`: `assignment_uuid` key.
 - `chat_sessions`: `id` key.
 - `chat_messages`: `id` key; alternate candidate key `(session_id, message_index)`.
@@ -279,4 +303,5 @@ No table stores attributes that are transitively determined by another non-key a
 - Keep `assignment_uuid` generated at ingest time to preserve current extension/webapp contract.
 - Persist chat conversations in `chat_sessions` and `chat_messages` so user and assistant turns are durable beyond in-memory session TTL.
 - Persist `assignment_snapshots` so each run is reproducible against the exact captured assignment state.
+- Deleting a chat session should remove its `chat_messages` and then clean up attachment rows/files if that session's ingest/snapshot become unreferenced.
 - The schema is async-ready: `headstart_runs.status` can represent queued/running/failed flows without redesign.

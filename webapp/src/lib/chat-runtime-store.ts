@@ -74,6 +74,11 @@ export function getRuntimeSession(sessionId: string) {
   return runtimeSessions.get(sessionId) ?? null;
 }
 
+export function removeRuntimeSession(sessionId: string) {
+  runtimeSessions.delete(sessionId);
+  runtimeListeners.delete(sessionId);
+}
+
 function setRuntimeSession(sessionId: string, next: RuntimeSessionState) {
   runtimeSessions.set(sessionId, next);
   notify({
