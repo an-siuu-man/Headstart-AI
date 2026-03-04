@@ -218,8 +218,7 @@ export default function Dashboard() {
   return (
     <motion.div variants={container} initial="hidden" animate="show" className="space-y-4">
       <motion.div variants={item}>
-        <Card className="relative overflow-hidden border-border/60 bg-gradient-to-br from-background via-background to-muted/35 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.7)]">
-          <div className="pointer-events-none absolute inset-0 bg-gradient-to-r from-sky-500/15 via-emerald-400/10 to-transparent dark:from-sky-500/10 dark:via-emerald-500/10" />
+        <Card className="relative overflow-hidden border-border/60 bg-card/95 shadow-[0_18px_40px_-30px_rgba(15,23,42,0.7)]">
           <CardContent className="relative space-y-4 px-4 py-3.5 sm:px-5">
             <div className="flex min-h-0 flex-wrap items-start justify-between gap-x-3 gap-y-2">
               <div className="space-y-0.5">
