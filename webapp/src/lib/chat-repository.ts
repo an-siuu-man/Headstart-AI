@@ -88,6 +88,12 @@ type DbChatMessageListPreview = {
   content_text: string;
 };
 
+type DbChatMessageTimestampPreview = {
+  session_id: string;
+  message_index: number;
+  created_at: string;
+};
+
 type DbHeadstartRun = {
   id: string;
   assignment_uuid: string;
@@ -1133,18 +1139,37 @@ export async function listPersistedChatSessionsForUser(
   }
 
   const sessionIds = sessions.map((session) => session.id);
-  const userMessages =
+  const [userMessages, latestMessageRows] =
     sessionIds.length > 0
-      ? await selectMany<DbChatMessageListPreview>({
-          table: "chat_messages",
-          query: {
-            session_id: inList(sessionIds),
-            sender_role: eq("user"),
-            select: "session_id,message_index,content_text",
-            order: "session_id.asc,message_index.desc",
-          },
-        })
-      : [];
+      ? await Promise.all([
+          selectMany<DbChatMessageListPreview>({
+            table: "chat_messages",
+            query: {
+              session_id: inList(sessionIds),
+              sender_role: eq("user"),
+              select: "session_id,message_index,content_text",
+              order: "session_id.asc,message_index.desc",
+            },
+          }),
+          selectMany<DbChatMessageTimestampPreview>({
+            table: "chat_messages",
+            query: {
+              session_id: inList(sessionIds),
+              select: "session_id,message_index,created_at",
+              order: "session_id.asc,message_index.desc",
+            },
+          }),
+        ])
+      : [[], []];
+
+  const latestMessageCreatedAtBySessionId = new Map<string, string>();
+  for (const message of latestMessageRows) {
+    if (latestMessageCreatedAtBySessionId.has(message.session_id)) {
+      continue;
+    }
+    latestMessageCreatedAtBySessionId.set(message.session_id, message.created_at);
+  }
+
   const lastUserMessageBySessionId = new Map<string, string | null>();
   for (const message of userMessages) {
     if (lastUserMessageBySessionId.has(message.session_id)) {
@@ -1188,45 +1213,57 @@ export async function listPersistedChatSessionsForUser(
       : [];
   const snapshotById = new Map(snapshots.map((snapshot) => [snapshot.id, snapshot]));
 
-  return sessions.map((session) => {
-    const ingest = ingestByAssignmentUuid.get(session.assignment_uuid);
-    const snapshot = ingest
-      ? snapshotById.get(ingest.assignment_snapshot_id)
-      : undefined;
-    const payload = sanitizePayloadForResponse(
-      asObject(snapshot?.raw_payload) as AssignmentPayload,
-    );
-    const attachmentCount = Array.isArray(payload.pdfAttachments)
-      ? payload.pdfAttachments.length
-      : 0;
-    const assignmentTitle =
-      toOptionalString(snapshot?.title) ??
-      toOptionalString(payload.title) ??
-      toOptionalString(session.title) ??
-      "(untitled assignment)";
+  return sessions
+    .map((session) => {
+      const ingest = ingestByAssignmentUuid.get(session.assignment_uuid);
+      const snapshot = ingest
+        ? snapshotById.get(ingest.assignment_snapshot_id)
+        : undefined;
+      const payload = sanitizePayloadForResponse(
+        asObject(snapshot?.raw_payload) as AssignmentPayload,
+      );
+      const attachmentCount = Array.isArray(payload.pdfAttachments)
+        ? payload.pdfAttachments.length
+        : 0;
+      const assignmentTitle =
+        toOptionalString(snapshot?.title) ??
+        toOptionalString(payload.title) ??
+        toOptionalString(session.title) ??
+        "(untitled assignment)";
+      const createdAt = toEpoch(session.created_at);
+      const latestMessageCreatedAt = latestMessageCreatedAtBySessionId.get(session.id);
+      const updatedAt = latestMessageCreatedAt
+        ? toEpoch(latestMessageCreatedAt)
+        : createdAt;
 
-    return {
-      sessionId: session.id,
-      assignmentUuid: session.assignment_uuid,
-      title: toOptionalString(session.title) ?? assignmentTitle,
-      lastUserMessage: lastUserMessageBySessionId.get(session.id) ?? null,
-      status: session.status,
-      createdAt: toEpoch(session.created_at),
-      updatedAt: toEpoch(session.updated_at),
-      context: {
-        assignmentRecordId: toOptionalString(snapshot?.assignment_id),
-        assignmentTitle,
-        courseName: toOptionalString(payload.courseName),
-        courseId: toOptionalString(payload.courseId),
-        assignmentId: toOptionalString(payload.assignmentId),
-        assignmentUrl: toOptionalString(payload.url),
-        dueAtISO:
-          toOptionalString(payload.dueAtISO) ??
-          toOptionalString(snapshot?.due_at),
-        attachmentCount,
-      },
-    };
-  });
+      return {
+        sessionId: session.id,
+        assignmentUuid: session.assignment_uuid,
+        title: toOptionalString(session.title) ?? assignmentTitle,
+        lastUserMessage: lastUserMessageBySessionId.get(session.id) ?? null,
+        status: session.status,
+        createdAt,
+        updatedAt,
+        context: {
+          assignmentRecordId: toOptionalString(snapshot?.assignment_id),
+          assignmentTitle,
+          courseName: toOptionalString(payload.courseName),
+          courseId: toOptionalString(payload.courseId),
+          assignmentId: toOptionalString(payload.assignmentId),
+          assignmentUrl: toOptionalString(payload.url),
+          dueAtISO:
+            toOptionalString(payload.dueAtISO) ??
+            toOptionalString(snapshot?.due_at),
+          attachmentCount,
+        },
+      };
+    })
+    .sort((left, right) => {
+      if (right.updatedAt !== left.updatedAt) {
+        return right.updatedAt - left.updatedAt;
+      }
+      return right.createdAt - left.createdAt;
+    });
 }
 
 export async function findLatestExistingGuideForAssignment(input: {
@@ -1665,6 +1702,25 @@ export async function createChatMessage(input: {
       metadata: input.metadata ?? {},
     },
   });
+
+  // Best-effort touch so chat session lists reflect latest message activity.
+  try {
+    await supabaseTableRequest<null>({
+      table: "chat_sessions",
+      method: "PATCH",
+      query: {
+        id: eq(input.sessionId),
+      },
+      headers: {
+        Prefer: "return=minimal",
+      },
+      body: {
+        updated_at: nowIso(),
+      },
+    });
+  } catch {
+    // Ignore non-critical touch failures; message persistence already succeeded.
+  }
 
   return toMessageDto(row);
 }
