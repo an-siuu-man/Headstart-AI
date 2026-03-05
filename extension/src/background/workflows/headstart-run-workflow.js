@@ -22,6 +22,7 @@
 import {
   createChatSession,
   getAssignmentGuideStatus,
+  isWebappAuthError,
 } from "../../clients/webapp-client.js";
 import { MESSAGE_TYPES } from "../../shared/contracts/messages.js";
 import { createLogger } from "../../shared/logger.js";
@@ -38,6 +39,11 @@ const BACKEND_BASE_URL = "http://localhost:3000";
 function buildChatUrl(sessionId) {
   const base = BACKEND_BASE_URL.replace(/\/$/, "");
   return `${base}/dashboard/chat?session=${encodeURIComponent(sessionId)}`;
+}
+
+function buildLoginUrl() {
+  const base = BACKEND_BASE_URL.replace(/\/$/, "");
+  return `${base}/login`;
 }
 
 function getTabHostname(tabUrl) {
@@ -148,6 +154,14 @@ export async function handleStartHeadstartRun(tab, pageTitle) {
     }, "HEADSTART_RESULT");
   } catch (e) {
     log.error("handleStartHeadstartRun failed:", e?.message || e);
+    if (isWebappAuthError(e)) {
+      sendToTabWithLogging(tab?.id, {
+        type: MESSAGE_TYPES.HEADSTART_AUTH_REQUIRED,
+        message: "Sign in to Headstart before generating a guide.",
+        loginUrl: buildLoginUrl(),
+      }, "HEADSTART_AUTH_REQUIRED");
+      return;
+    }
     sendToTabWithLogging(tab?.id, {
       type: MESSAGE_TYPES.HEADSTART_ERROR,
       error: String(e?.message || e),
@@ -163,6 +177,8 @@ export async function handleCheckAssignmentGuideStatus(tab) {
       latestSessionId: null,
       latestSessionUpdatedAt: null,
       status: null,
+      authRequired: false,
+      loginUrl: null,
     };
   }
 
@@ -193,8 +209,22 @@ export async function handleCheckAssignmentGuideStatus(tab) {
           ? result.latest_session_updated_at
           : null,
       status: typeof result?.status === "string" ? result.status : null,
+      authRequired: false,
+      loginUrl: null,
     };
   } catch (e) {
+    if (isWebappAuthError(e)) {
+      log.info("Guide status lookup requires authentication.");
+      return {
+        exists: false,
+        latestSessionId: null,
+        latestSessionUpdatedAt: null,
+        status: null,
+        authRequired: true,
+        loginUrl: buildLoginUrl(),
+      };
+    }
+
     log.warn(
       "Existing guide status lookup failed:",
       e?.message || e,
@@ -204,6 +234,8 @@ export async function handleCheckAssignmentGuideStatus(tab) {
       latestSessionId: null,
       latestSessionUpdatedAt: null,
       status: null,
+      authRequired: false,
+      loginUrl: null,
     };
   }
 }

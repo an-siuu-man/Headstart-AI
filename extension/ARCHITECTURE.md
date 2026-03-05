@@ -43,13 +43,15 @@ The Chrome MV3 extension detects Canvas assignment pages, extracts assignment da
 
 ## Flow 2: Headstart Run Orchestration
 
-1. Content/widget sends `START_HEADSTART_RUN`.
-2. Background router calls `handleStartHeadstartRun()` (`background/workflows/headstart-run-workflow.js`).
-3. Workflow parses Canvas IDs from tab URL and loads stored assignment record.
-4. `buildHeadstartPayload()` normalizes due date/timezone flags and assignment details.
-5. Extension calls web app `/api/ingest-assignment` via `ingestAssignment()`.
-6. Extension calls web app `/api/run-agent` via `runAgent()`, including PDF attachments as base64.
-7. Background sends `HEADSTART_RESULT` or `HEADSTART_ERROR` back to the active tab.
+1. Content/widget preflights `CHECK_ASSIGNMENT_GUIDE_STATUS` for single-assignment pages.
+2. Background calls web app `/api/assignment-guide-status`.
+3. If auth is missing, widget switches CTA to login (`HEADSTART_AUTH_REQUIRED` behavior).
+4. Widget re-checks guide status when the Canvas tab regains focus/visibility to recover after login.
+5. Content/widget sends `START_HEADSTART_RUN` once authenticated.
+6. Background router calls `handleStartHeadstartRun()` (`background/workflows/headstart-run-workflow.js`).
+7. Workflow parses Canvas IDs from tab URL, loads stored assignment record, and builds normalized payload.
+8. Extension calls web app `/api/chat-session` to create a dashboard-backed session handoff.
+9. Background sends `HEADSTART_RESULT`, `HEADSTART_AUTH_REQUIRED`, or `HEADSTART_ERROR` back to the active tab.
 
 ## Failure and Recovery Behavior
 

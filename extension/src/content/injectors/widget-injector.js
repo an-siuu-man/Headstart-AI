@@ -28,6 +28,7 @@ const SIDEBAR_ID = "headstart-sidebar";
 const TOGGLE_ID = "headstart-toggle-btn";
 const OUTPUT_ID = "headstart-output";
 const WEBAPP_BASE_URL = "http://localhost:3000";
+const DEFAULT_LOGIN_URL = `${WEBAPP_BASE_URL}/login`;
 const STATUS_TONE_CLASSES = [
   "headstart-sidebar__output--info",
   "headstart-sidebar__output--success",
@@ -223,11 +224,86 @@ function injectSidebar(data) {
 
   const actionBtn = sidebar.querySelector(".headstart-sidebar__btn");
   let dashboardUrl = null;
+  let authRequired = false;
+  let loginUrl = DEFAULT_LOGIN_URL;
+  let guideStatusCheckInFlight = false;
   let singleAssignmentActionLabel = "Generate Guide";
   const resetSingleAssignmentActionLabel = () => {
+    if (authRequired) {
+      actionBtn.textContent = "Log in to Headstart";
+      return;
+    }
     if (!dashboardUrl) {
       actionBtn.textContent = singleAssignmentActionLabel;
     }
+  };
+  const applyAuthRequiredState = (message, nextLoginUrl) => {
+    authRequired = true;
+    dashboardUrl = null;
+    if (typeof nextLoginUrl === "string" && nextLoginUrl.trim()) {
+      loginUrl = nextLoginUrl.trim();
+    } else {
+      loginUrl = DEFAULT_LOGIN_URL;
+    }
+    actionBtn.disabled = false;
+    actionBtn.textContent = "Log in to Headstart";
+    setStatus(
+      message || "Sign in to Headstart before checking guide status or generating one.",
+      "error",
+    );
+  };
+  const clearAuthRequiredState = () => {
+    authRequired = false;
+    loginUrl = DEFAULT_LOGIN_URL;
+  };
+  const checkGuideStatus = ({ showAuthStatus = true } = {}) => {
+    if (isList || guideStatusCheckInFlight) return;
+    if (actionBtn.disabled && !authRequired) return;
+
+    guideStatusCheckInFlight = true;
+    chrome.runtime.sendMessage(
+      { type: MESSAGE_TYPES.CHECK_ASSIGNMENT_GUIDE_STATUS },
+      (resp) => {
+        guideStatusCheckInFlight = false;
+
+        if (chrome.runtime.lastError) {
+          log.warn(
+            "CHECK_ASSIGNMENT_GUIDE_STATUS failed:",
+            chrome.runtime.lastError.message,
+          );
+          return;
+        }
+
+        if (resp?.authRequired) {
+          const message = showAuthStatus
+            ? "Sign in to Headstart to check existing guides and generate one."
+            : null;
+          applyAuthRequiredState(message, resp?.loginUrl);
+          return;
+        }
+
+        if (!resp?.ok) {
+          return;
+        }
+
+        clearAuthRequiredState();
+        singleAssignmentActionLabel = resp?.exists
+          ? "Generate New Guide"
+          : "Generate Guide";
+        resetSingleAssignmentActionLabel();
+
+        if (resp?.exists) {
+          setStatus(
+            "A guide already exists for this assignment. You can still generate a new guide.",
+            "info",
+          );
+        }
+      },
+    );
+  };
+  const refreshGuideStatusOnReturn = () => {
+    if (isList) return;
+    checkGuideStatus({ showAuthStatus: false });
   };
   actionBtn.onclick = () => {
     try {
@@ -243,6 +319,12 @@ function injectSidebar(data) {
     if (isList) {
       window.open(`${WEBAPP_BASE_URL}/dashboard`, "_blank", "noopener,noreferrer");
       setStatus("Opened dashboard in a new tab.", "success");
+      return;
+    }
+
+    if (authRequired) {
+      window.open(loginUrl, "_blank", "noopener,noreferrer");
+      setStatus("Authentication required. Opened login in a new tab.", "info");
       return;
     }
 
@@ -272,6 +354,15 @@ function injectSidebar(data) {
   chrome.runtime.onMessage.addListener((msg) => {
     if (!msg) return;
 
+    if (msg.type === MESSAGE_TYPES.HEADSTART_AUTH_REQUIRED) {
+      log.warn("HEADSTART_AUTH_REQUIRED received");
+      applyAuthRequiredState(
+        stringifySafe(msg.message),
+        msg.loginUrl,
+      );
+      return;
+    }
+
     if (msg.type === MESSAGE_TYPES.HEADSTART_ERROR) {
       log.error("HEADSTART_ERROR received:", msg.error);
       actionBtn.disabled = false;
@@ -287,6 +378,7 @@ function injectSidebar(data) {
       log.info("HEADSTART_RESULT received");
       log.debug("Result payload:", msg.result);
       actionBtn.disabled = false;
+      clearAuthRequiredState();
 
       const redirectUrl = msg.result?.redirectUrl || msg.redirectUrl;
       if (redirectUrl) {
@@ -304,28 +396,13 @@ function injectSidebar(data) {
   });
 
   if (!isList) {
-    chrome.runtime.sendMessage(
-      { type: MESSAGE_TYPES.CHECK_ASSIGNMENT_GUIDE_STATUS },
-      (resp) => {
-        if (chrome.runtime.lastError) {
-          log.warn(
-            "CHECK_ASSIGNMENT_GUIDE_STATUS failed:",
-            chrome.runtime.lastError.message,
-          );
-          return;
-        }
-        if (!resp?.ok || !resp?.exists) {
-          return;
-        }
-
-        singleAssignmentActionLabel = "Generate New Guide";
-        resetSingleAssignmentActionLabel();
-        setStatus(
-          "A guide already exists for this assignment. You can still generate a new guide.",
-          "info",
-        );
-      },
-    );
+    checkGuideStatus({ showAuthStatus: true });
+    window.addEventListener("focus", refreshGuideStatusOnReturn);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") {
+        refreshGuideStatusOnReturn();
+      }
+    });
   }
 
   document.body.appendChild(sidebar);

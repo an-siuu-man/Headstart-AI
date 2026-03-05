@@ -8,6 +8,23 @@ function toBaseUrl(baseUrl) {
   return (baseUrl || DEFAULT_BACKEND_BASE_URL).replace(/\/$/, "");
 }
 
+function buildWebappHttpError({ endpoint, status, bodyText }) {
+  const preview =
+    typeof bodyText === "string" ? bodyText.slice(0, 300) : String(bodyText || "");
+  const error = new Error(`${endpoint} failed (${status}): ${preview}`);
+  error.name = "WebappHttpError";
+  error.status = status;
+  error.bodyPreview = preview;
+  error.isAuthError = status === 401 || status === 403;
+  return error;
+}
+
+export function isWebappAuthError(error) {
+  if (!error || typeof error !== "object") return false;
+  if (error.isAuthError === true) return true;
+  return error.status === 401 || error.status === 403;
+}
+
 export async function ingestAssignment(payload, baseUrl) {
   const backendBaseUrl = toBaseUrl(baseUrl);
   const res = await fetch(`${backendBaseUrl}/api/ingest-assignment`, {
@@ -41,7 +58,11 @@ export async function createChatSession({ payload, userId }, baseUrl) {
 
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`chat-session failed (${res.status}): ${errText}`);
+    throw buildWebappHttpError({
+      endpoint: "chat-session",
+      status: res.status,
+      bodyText: errText,
+    });
   }
 
   return res.json();
@@ -72,7 +93,11 @@ export async function getAssignmentGuideStatus(
   const rawBody = await res.text();
 
   if (!res.ok) {
-    throw new Error(`assignment-guide-status failed (${res.status}): ${rawBody.slice(0, 300)}`);
+    throw buildWebappHttpError({
+      endpoint: "assignment-guide-status",
+      status: res.status,
+      bodyText: rawBody,
+    });
   }
 
   try {
