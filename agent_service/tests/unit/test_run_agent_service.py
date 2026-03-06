@@ -101,7 +101,7 @@ class TestRunAgentService(unittest.TestCase):
                     {"content_delta": "Start with milestone one.", "reasoning_delta": "think-b"},
                 ]
             ),
-        ):
+        ) as mock_stream:
             events = list(stream_chat_workflow(req, route_path="/api/v1/chats/stream"))
 
         delta_events = [event for event in events if event.get("event") == "chat.delta"]
@@ -115,6 +115,56 @@ class TestRunAgentService(unittest.TestCase):
         completed = completed_events[0]["data"]
         self.assertEqual(completed["assistant_message"], "Start with milestone one.")
         self.assertEqual(completed["thinking_content"], "think-athink-b")
+        mock_stream.assert_called_once_with(
+            assignment_payload={"title": "HW1"},
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="What should I do first?",
+            include_thinking=False,
+        )
+
+    def test_chat_stream_request_defaults_thinking_mode_false(self):
+        req = ChatStreamRequest(
+            assignment_payload={"title": "HW1"},
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="Default mode?",
+        )
+
+        self.assertFalse(req.thinking_mode)
+
+    def test_stream_chat_workflow_passes_thinking_mode_true(self):
+        req = ChatStreamRequest(
+            assignment_payload={"title": "HW1"},
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="Use thinking mode",
+            thinking_mode=True,
+        )
+
+        with patch(
+            "app.services.run_agent_service._stream_headstart_chat_answer",
+            return_value=iter(
+                [
+                    {"content_delta": "Use milestones.", "reasoning_delta": ""},
+                ]
+            ),
+        ) as mock_stream:
+            events = list(stream_chat_workflow(req, route_path="/api/v1/chats/stream"))
+
+        completed_events = [event for event in events if event.get("event") == "chat.completed"]
+        self.assertEqual(len(completed_events), 1)
+        mock_stream.assert_called_once_with(
+            assignment_payload={"title": "HW1"},
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="Use thinking mode",
+            include_thinking=True,
+        )
 
 
 if __name__ == "__main__":

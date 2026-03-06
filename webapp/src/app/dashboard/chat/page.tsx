@@ -4,7 +4,7 @@ import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, Suspense, use
 import { useRouter, useSearchParams } from "next/navigation"
 import { format, isSameDay } from "date-fns"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
-import { LoaderCircle, SendHorizontal, Trash2 } from "lucide-react"
+import { Brain, LoaderCircle, SendHorizontal, Trash2 } from "lucide-react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -315,6 +315,7 @@ function DashboardChatPageContent() {
   const [errorText, setErrorText] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [isSending, setIsSending] = useState(false)
+  const [isThinkingModeEnabled, setIsThinkingModeEnabled] = useState(false)
   const [showProgressPanel, setShowProgressPanel] = useState(false)
   const [displayProgress, setDisplayProgress] = useState(0)
   const [stageToneIndex, setStageToneIndex] = useState(0)
@@ -1024,6 +1025,7 @@ function DashboardChatPageContent() {
           },
           body: JSON.stringify({
             content: text,
+            thinking_mode: isThinkingModeEnabled ? "thinking" : "normal",
           }),
         },
       )
@@ -1290,6 +1292,17 @@ function DashboardChatPageContent() {
                     onSubmit={handleSend}
                     className="flex w-full items-center gap-2 rounded-full bg-background/92 px-2 py-2 shadow-[0_14px_32px_-20px_rgba(15,23,42,0.55)] backdrop-blur supports-[backdrop-filter]:bg-background/80"
                   >
+                    <Button
+                      type="button"
+                      variant={isThinkingModeEnabled ? "secondary" : "ghost"}
+                      aria-pressed={isThinkingModeEnabled}
+                      disabled={isSending}
+                      onClick={() => setIsThinkingModeEnabled((previous) => !previous)}
+                      className="h-9 rounded-full px-3 text-xs font-medium"
+                    >
+                      <Brain className="mr-1.5 h-3.5 w-3.5" />
+                      {isThinkingModeEnabled ? "Thinking On" : "Thinking Off"}
+                    </Button>
                     <Input
                       value={draft}
                       onChange={(event) => setDraft(event.target.value)}

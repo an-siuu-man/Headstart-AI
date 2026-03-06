@@ -738,6 +738,7 @@ def stream_headstart_chat_answer(
     chat_history: Optional[list[dict]] = None,
     retrieval_context: Optional[list[dict]] = None,
     user_message: str = "",
+    include_thinking: bool = False,
 ) -> Iterator[dict[str, str]]:
     """
     Stream follow-up chat answer and reasoning chunks when provider streaming is available.
@@ -806,12 +807,12 @@ def stream_headstart_chat_answer(
     try:
         logger.info(
             "Streaming follow-up chat response from provider | thinking_mode=%s",
-            THINKING_MODE_ENABLED,
+            include_thinking,
         )
         for chunk in _stream_message_deltas(
             llm,
             messages,
-            include_thinking=True,
+            include_thinking=include_thinking,
         ):
             has_streamed_content = True
             yield chunk
@@ -826,7 +827,7 @@ def stream_headstart_chat_answer(
         return
 
     logger.info("Using single invoke follow-up chat fallback")
-    result = llm.invoke(messages, **_request_kwargs(include_thinking=True))
+    result = llm.invoke(messages, **_request_kwargs(include_thinking=include_thinking))
     content = _extract_markdown_payload(_to_text(result))
     reasoning = _extract_reasoning_content(result).strip()
     if not content:

@@ -51,3 +51,4 @@ class ChatStreamRequest(BaseModel):
     chat_history: List[ChatHistoryMessage] = []
     retrieval_context: List[RetrievalChunk] = []
     user_message: str
+    thinking_mode: bool = False

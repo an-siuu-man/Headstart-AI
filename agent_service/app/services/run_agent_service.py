@@ -55,6 +55,7 @@ def _stream_headstart_chat_answer(
     chat_history: list[dict],
     retrieval_context: list[dict],
     user_message: str,
+    include_thinking: bool = False,
 ):
     """Lazy import to avoid loading LLM dependencies at module import time."""
     from ..orchestrators.headstart_orchestrator import stream_headstart_chat_answer
@@ -65,6 +66,7 @@ def _stream_headstart_chat_answer(
         chat_history=chat_history,
         retrieval_context=retrieval_context,
         user_message=user_message,
+        include_thinking=include_thinking,
     )
 
 
@@ -299,12 +301,13 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
       or chat.error on failure.
     """
     logger.info(
-        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d",
+        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d | thinking_mode=%s",
         route_path,
         len(req.assignment_payload or {}),
         len(req.guide_markdown or ""),
         len(req.chat_history or []),
         len(req.retrieval_context or []),
+        req.thinking_mode,
     )
 
     try:
@@ -329,6 +332,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             chat_history=[item.model_dump() for item in req.chat_history],
             retrieval_context=[item.model_dump() for item in req.retrieval_context],
             user_message=req.user_message,
+            include_thinking=req.thinking_mode,
         ):
             delta, reasoning_delta = _split_stream_chunk(chunk)
             if not delta and not reasoning_delta:
