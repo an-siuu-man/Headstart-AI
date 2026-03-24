@@ -928,44 +928,44 @@ async function getPersistedSessionSnapshotWithMessageLimit(
     throw new Error(`assignment_ingests missing for assignment_uuid=${session.assignment_uuid}`);
   }
 
-  const snapshot = await selectFirst<DbAssignmentSnapshot>({
-    table: "assignment_snapshots",
-    query: {
-      id: eq(ingest.assignment_snapshot_id),
-      select: "id,raw_payload",
-      limit: 1,
-    },
-  });
-
-  if (!snapshot) {
-    throw new Error(`assignment_snapshots missing for id=${ingest.assignment_snapshot_id}`);
-  }
-
   const boundedMessageLimit =
     typeof messageLimit === "number"
       ? Math.max(1, Math.min(40, Math.floor(messageLimit)))
       : null;
 
-  const messages = await selectMany<DbChatMessage>({
-    table: "chat_messages",
-    query: {
-      session_id: eq(session.id),
-      select:
-        "id,session_id,message_index,sender_role,content_text,content_format,metadata,created_at",
-      order: boundedMessageLimit == null ? "message_index.asc" : "message_index.desc",
-      ...(boundedMessageLimit == null ? {} : { limit: boundedMessageLimit }),
-    },
-  });
+  const [snapshot, messages, latestRun] = await Promise.all([
+    selectFirst<DbAssignmentSnapshot>({
+      table: "assignment_snapshots",
+      query: {
+        id: eq(ingest.assignment_snapshot_id),
+        select: "id,raw_payload",
+        limit: 1,
+      },
+    }),
+    selectMany<DbChatMessage>({
+      table: "chat_messages",
+      query: {
+        session_id: eq(session.id),
+        select:
+          "id,session_id,message_index,sender_role,content_text,content_format,metadata,created_at",
+        order: boundedMessageLimit == null ? "message_index.asc" : "message_index.desc",
+        ...(boundedMessageLimit == null ? {} : { limit: boundedMessageLimit }),
+      },
+    }),
+    selectFirst<DbHeadstartRun>({
+      table: "headstart_runs",
+      query: {
+        assignment_uuid: eq(session.assignment_uuid),
+        select: "id,assignment_uuid,attempt_no,status",
+        order: "attempt_no.desc",
+        limit: 1,
+      },
+    }),
+  ]);
 
-  const latestRun = await selectFirst<DbHeadstartRun>({
-    table: "headstart_runs",
-    query: {
-      assignment_uuid: eq(session.assignment_uuid),
-      select: "id,assignment_uuid,attempt_no,status",
-      order: "attempt_no.desc",
-      limit: 1,
-    },
-  });
+  if (!snapshot) {
+    throw new Error(`assignment_snapshots missing for id=${ingest.assignment_snapshot_id}`);
+  }
 
   let guideMarkdown = "";
   if (latestRun?.status === "succeeded") {

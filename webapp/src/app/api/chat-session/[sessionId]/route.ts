@@ -84,7 +84,12 @@ export async function GET(
     const startedAt = Date.now();
 
     while (Date.now() - startedAt < waitMs) {
-      await sleep(300);
+      await sleep(1000);
+      const runtime = getRuntimeSession(sessionId);
+      if (!runtime || runtime.updatedAt <= session.updated_at) {
+        continue;
+      }
+
       const next = await loadSessionDto(sessionId);
       if (!next) {
         return NextResponse.json(

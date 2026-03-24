@@ -161,7 +161,20 @@ export async function GET(
         applyRuntimeEvent(currentSession, event);
 
         if (event.type === "session.update") {
-          emit("session.update", currentSession, String(currentSession.updated_at));
+          emit(
+            "session.update",
+            {
+              status: currentSession.status,
+              stage: currentSession.stage,
+              progress_percent: currentSession.progress_percent,
+              status_message: currentSession.status_message,
+              streamed_guide_markdown: currentSession.streamed_guide_markdown,
+              result: currentSession.result,
+              error: currentSession.error,
+              updated_at: currentSession.updated_at,
+            },
+            String(currentSession.updated_at),
+          );
           return;
         }
 

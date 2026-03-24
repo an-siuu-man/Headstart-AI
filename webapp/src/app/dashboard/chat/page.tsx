@@ -2,12 +2,13 @@
 
 import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
-import { format, isSameDay } from "date-fns"
+import { format } from "date-fns"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
 import { Brain, LoaderCircle, SendHorizontal, Trash2 } from "lucide-react"
 import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 
+import { ChatMessageBubble } from "@/components/chat/chat-message-bubble"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -274,16 +275,6 @@ function formatDateTime(value: number | string | null | undefined) {
   return format(date, "MMM d, yyyy h:mm a")
 }
 
-function formatMessageTimestamp(value: string | null | undefined) {
-  if (!value) return null
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return null
-  if (!isSameDay(date, new Date())) {
-    return format(date, "MMM d, yyyy hh:mm a")
-  }
-  return format(date, "hh:mm a")
-}
-
 function ChatPageFallback() {
   return (
     <div className="space-y-6">
@@ -322,18 +313,41 @@ function DashboardChatPageContent() {
   const [isContextDialogOpen, setIsContextDialogOpen] = useState(false)
   const threadContainerRef = useRef<HTMLDivElement | null>(null)
   const latestSessionRef = useRef<ChatSessionResponse | null>(null)
+  const latestAssistantMessageIdRef = useRef<string | null>(null)
   const previousGuideLengthRef = useRef(0)
+  const lastScrollTimeRef = useRef(0)
   const progressHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reduceMotion = useReducedMotion()
 
-  function scrollThreadToBottom(behavior: ScrollBehavior = "smooth") {
-    const viewport = threadContainerRef.current?.querySelector<HTMLDivElement>(
+  function getThreadViewport() {
+    return threadContainerRef.current?.querySelector<HTMLDivElement>(
       "[data-slot='scroll-area-viewport']"
     )
+  }
+
+  function scrollThreadToBottom(behavior: ScrollBehavior = "smooth") {
+    const viewport = getThreadViewport()
     if (!viewport) return
     viewport.scrollTo({
       top: viewport.scrollHeight,
       behavior,
+    })
+  }
+
+  function isNearBottom(threshold = 150) {
+    const viewport = getThreadViewport()
+    if (!viewport) return true
+    return (
+      viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < threshold
+    )
+  }
+
+  function throttledScrollToBottom() {
+    const now = Date.now()
+    if (now - lastScrollTimeRef.current < 150) return
+    lastScrollTimeRef.current = now
+    requestAnimationFrame(() => {
+      scrollThreadToBottom("smooth")
     })
   }
 
@@ -376,6 +390,16 @@ function DashboardChatPageContent() {
       messages,
       updated_at: Date.now(),
     }
+  }
+
+  function findLatestAssistantMessageId(messages: ChatMessageResponse[]) {
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]
+      if (message.sender_role === "assistant") {
+        return message.id
+      }
+    }
+    return null
   }
 
   useEffect(() => {
@@ -422,6 +446,7 @@ function DashboardChatPageContent() {
 
   useEffect(() => {
     if (!sessionId) {
+      latestAssistantMessageIdRef.current = null
       return
     }
 
@@ -464,10 +489,25 @@ function DashboardChatPageContent() {
       }
     }
 
-    const parseSessionMessage = (event: MessageEvent<string>) => {
+    const parseSessionSnapshot = (event: MessageEvent<string>) => {
       try {
         const data = JSON.parse(event.data) as ChatSessionResponse
+        latestAssistantMessageIdRef.current = findLatestAssistantMessageId(data.messages)
         applySession(data)
+      } catch {
+        setErrorText("Unable to parse session stream event.")
+      }
+    }
+
+    const parseSessionUpdate = (event: MessageEvent<string>) => {
+      try {
+        const patch = JSON.parse(event.data) as Partial<ChatSessionResponse>
+        const previous = latestSessionRef.current
+        if (!previous || previous.session_id !== sessionId) return
+        applySession({
+          ...previous,
+          ...patch,
+        })
       } catch {
         setErrorText("Unable to parse session stream event.")
       }
@@ -476,9 +516,14 @@ function DashboardChatPageContent() {
     const parseChatMessageCreated = (event: MessageEvent<string>) => {
       try {
         const message = JSON.parse(event.data) as ChatMessageResponse
+        if (message.sender_role === "assistant") {
+          latestAssistantMessageIdRef.current = message.id
+        }
         setSession((previous) => {
           if (!previous || previous.session_id !== sessionId) return previous
-          return upsertSessionMessage(previous, message)
+          const next = upsertSessionMessage(previous, message)
+          latestSessionRef.current = next
+          return next
         })
         requestAnimationFrame(() => {
           scrollThreadToBottom("smooth")
@@ -497,19 +542,22 @@ function DashboardChatPageContent() {
         }
         if (!payload.message_id) return
         const messageId = payload.message_id
+        const shouldAutoScroll = isNearBottom()
 
         setSession((previous) => {
           if (!previous || previous.session_id !== sessionId) return previous
-          return patchSessionMessageContent(previous, messageId, (previousText) => {
+          const next = patchSessionMessageContent(previous, messageId, (previousText) => {
             if (typeof payload.content === "string") {
               return payload.content
             }
             return `${previousText}${payload.delta ?? ""}`
           })
+          latestSessionRef.current = next
+          return next
         })
-        requestAnimationFrame(() => {
-          scrollThreadToBottom("smooth")
-        })
+        if (shouldAutoScroll) {
+          throttledScrollToBottom()
+        }
       } catch {
         setErrorText("Unable to parse chat delta event.")
       }
@@ -524,10 +572,13 @@ function DashboardChatPageContent() {
         if (!payload.message_id || typeof payload.content !== "string") return
         const messageId = payload.message_id
         const content = payload.content
+        latestAssistantMessageIdRef.current = messageId
 
         setSession((previous) => {
           if (!previous || previous.session_id !== sessionId) return previous
-          return patchSessionMessageContent(previous, messageId, () => content)
+          const next = patchSessionMessageContent(previous, messageId, () => content)
+          latestSessionRef.current = next
+          return next
         })
         setIsSending(false)
       } catch {
@@ -550,8 +601,8 @@ function DashboardChatPageContent() {
       }
     }
 
-    eventSource.addEventListener("session.snapshot", parseSessionMessage as EventListener)
-    eventSource.addEventListener("session.update", parseSessionMessage as EventListener)
+    eventSource.addEventListener("session.snapshot", parseSessionSnapshot as EventListener)
+    eventSource.addEventListener("session.update", parseSessionUpdate as EventListener)
     eventSource.addEventListener("chat.message.created", parseChatMessageCreated as EventListener)
     eventSource.addEventListener("chat.message.delta", parseChatMessageDelta as EventListener)
     eventSource.addEventListener("chat.message.completed", parseChatMessageCompleted as EventListener)
@@ -652,7 +703,11 @@ function DashboardChatPageContent() {
     }
     if (effectiveSession.status !== "completed") return ""
     return extractGuideMarkdown(effectiveSession.result)
-  }, [effectiveSession])
+  }, [
+    effectiveSession?.streamed_guide_markdown,
+    effectiveSession?.status,
+    effectiveSession?.result,
+  ])
 
   const {
     visibleMarkdown: guideMarkdown,
@@ -680,13 +735,6 @@ function DashboardChatPageContent() {
     previousGuideLengthRef.current = currentLength
   }, [guideMarkdown])
 
-  useEffect(() => {
-    if (!effectiveSession) return
-    requestAnimationFrame(() => {
-      scrollThreadToBottom("smooth")
-    })
-  }, [effectiveSession])
-
   const progressLabel =
     effectiveSession?.status === "completed"
       ? "Guide ready"
@@ -705,13 +753,7 @@ function DashboardChatPageContent() {
         effectiveSession.stage === "chat_streaming") &&
       !isSending,
   )
-  const latestAssistantMessageId = useMemo(() => {
-    const assistantMessages = (effectiveSession?.messages ?? []).filter(
-      (message) => message.sender_role === "assistant",
-    )
-    const latestMessage = assistantMessages[assistantMessages.length - 1]
-    return latestMessage?.id ?? null
-  }, [effectiveSession?.messages])
+  const latestAssistantMessageId = latestAssistantMessageIdRef.current
 
   const pendingDeleteSession = pendingDeleteSessionId
     ? sessionList.find((item) => item.session_id === pendingDeleteSessionId) ?? null
@@ -1205,75 +1247,18 @@ function DashboardChatPageContent() {
                   </div>
                 ) : null}
 
-                {(effectiveSession?.messages ?? []).map((message) => {
-                  const assistantThinkState =
-                    message.sender_role === "assistant"
-                      ? removeThinkBlocks(message.content_text || "")
-                      : null
-                  const messageTimestampText = formatMessageTimestamp(message.created_at)
-                  const assistantVisibleText = assistantThinkState?.visibleMarkdown.trim() || ""
-                  const isLatestStreamingAssistant =
-                    message.sender_role === "assistant" &&
-                    message.id === latestAssistantMessageId &&
-                    isSending
-                  const assistantThinkingCount = Math.max(
-                    assistantThinkState?.thinkBlockCount ?? 0,
-                    assistantThinkState?.isThinking ? 1 : 0,
-                  )
-                  const showAssistantThinking =
-                    isLatestStreamingAssistant &&
-                    !assistantVisibleText &&
-                    assistantThinkingCount > 0
-
-                  return (
-                    <motion.div
-                      key={message.id}
-                      initial={reduceMotion ? false : { opacity: 0, y: 8 }}
-                      animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
-                      transition={reduceMotion ? undefined : { duration: 0.24, ease: EASE_OUT }}
-                      className={
-                        message.sender_role === "user"
-                          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-left text-[15px] text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
-                          : "mx-auto w-full max-w-4xl px-1 py-1 text-left text-[15px]"
-                      }
-                    >
-                      {message.sender_role === "assistant" ? (
-                        <div className="space-y-2">
-                          {showAssistantThinking
-                            ? Array.from({ length: assistantThinkingCount }).map((_, index) => (
-                                <ThinkingMessage
-                                  key={`${message.id}-thinking-${index}`}
-                                  reduceMotion={reduceMotion}
-                                />
-                              ))
-                            : null}
-                          {assistantVisibleText ? (
-                            <div className="min-w-0 [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-border/70 [&_thead]:bg-muted/45 [&_th]:border-b [&_th]:border-border/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-border/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-muted/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
-                              <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
-                                {assistantVisibleText}
-                              </ReactMarkdown>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : (
-                        <p className="whitespace-pre-wrap break-words text-left">
-                          {message.content_text}
-                        </p>
-                      )}
-                      {messageTimestampText ? (
-                        <p
-                          className={
-                            message.sender_role === "user"
-                              ? "mt-1 text-right text-[11px] font-medium tracking-wide text-zinc-200/80"
-                              : "mt-1 text-left text-[11px] font-medium tracking-wide text-muted-foreground"
-                          }
-                        >
-                          {messageTimestampText}
-                        </p>
-                      ) : null}
-                    </motion.div>
-                  )
-                })}
+                {(effectiveSession?.messages ?? []).map((message) => (
+                  <ChatMessageBubble
+                    key={message.id}
+                    message={message}
+                    isLatestStreamingAssistant={
+                      message.sender_role === "assistant" &&
+                      message.id === latestAssistantMessageId &&
+                      isSending
+                    }
+                    reduceMotion={reduceMotion}
+                  />
+                ))}
                 </div>
               </ScrollArea>
             </div>
