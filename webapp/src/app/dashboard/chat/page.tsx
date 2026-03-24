@@ -9,6 +9,7 @@ import ReactMarkdown, { type Components } from "react-markdown"
 import remarkGfm from "remark-gfm"
 
 import { ChatMessageBubble } from "@/components/chat/chat-message-bubble"
+import { GuideExportButton } from "@/components/chat/guide-export-button"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
@@ -1262,6 +1263,16 @@ function DashboardChatPageContent() {
                 </div>
               </ScrollArea>
             </div>
+
+            {hasGuideContent && !isGuideStreaming && (
+              <div className="absolute bottom-16 right-6 z-30">
+                <GuideExportButton
+                  guideMarkdown={guideMarkdown}
+                  assignmentTitle={payload?.title}
+                  courseName={payload?.courseName}
+                />
+              </div>
+            )}
 
             <div
               aria-hidden="true"
