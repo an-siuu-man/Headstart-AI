@@ -22,7 +22,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog"
-import { Input } from "@/components/ui/input"
 import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 
@@ -302,6 +301,7 @@ function DashboardChatPageContent() {
   const [stageToneIndex, setStageToneIndex] = useState(0)
   const [isContextDialogOpen, setIsContextDialogOpen] = useState(false)
   const threadContainerRef = useRef<HTMLDivElement | null>(null)
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const latestSessionRef = useRef<ChatSessionResponse | null>(null)
   const latestAssistantMessageIdRef = useRef<string | null>(null)
   const previousGuideLengthRef = useRef(0)
@@ -1081,6 +1081,7 @@ function DashboardChatPageContent() {
         ),
       )
       setDraft("")
+      if (textareaRef.current) textareaRef.current.style.height = "auto"
       requestAnimationFrame(() => {
         scrollThreadToBottom("smooth")
       })
@@ -1091,8 +1092,18 @@ function DashboardChatPageContent() {
     }
   }
 
-  function handleDraftKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
+  function handleDraftKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Tab") {
+      event.preventDefault()
+      const el = event.currentTarget
+      const start = el.selectionStart
+      const end = el.selectionEnd
+      el.setRangeText("\t", start, end, "end")
+      setDraft(el.value)
+      return
+    }
     if (event.key !== "Enter") return
+    if (event.shiftKey) return
     if (event.nativeEvent.isComposing) return
     if (!draft.trim()) return
     if (!canSendMessage || isSending) return
@@ -1275,7 +1286,7 @@ function DashboardChatPageContent() {
                   ) : null}
                   <form
                     onSubmit={handleSend}
-                    className="flex w-full items-center gap-2 rounded-full bg-background/92 px-2 py-2 shadow-[0_14px_32px_-20px_rgba(15,23,42,0.55)] backdrop-blur supports-[backdrop-filter]:bg-background/80"
+                    className="flex w-full items-end gap-2 rounded-2xl bg-background/92 px-2 py-2 shadow-[0_14px_32px_-20px_rgba(15,23,42,0.55)] backdrop-blur supports-[backdrop-filter]:bg-background/80 dark:border dark:border-zinc-700/70"
                   >
                     <Button
                       type="button"
@@ -1283,17 +1294,24 @@ function DashboardChatPageContent() {
                       aria-pressed={isThinkingModeEnabled}
                       disabled={isSending}
                       onClick={() => setIsThinkingModeEnabled((previous) => !previous)}
-                      className="h-9 rounded-full px-3 text-xs font-medium"
+                      className="h-9 shrink-0 rounded-full px-3 text-xs font-medium"
                     >
                       <Brain className="mr-1.5 h-3.5 w-3.5" />
                       {isThinkingModeEnabled ? "Thinking On" : "Thinking Off"}
                     </Button>
-                    <Input
+                    <textarea
+                      ref={textareaRef}
+                      rows={1}
                       value={draft}
-                      onChange={(event) => setDraft(event.target.value)}
+                      onChange={(event) => {
+                        setDraft(event.target.value)
+                        const el = event.target
+                        el.style.height = "auto"
+                        el.style.height = `${el.scrollHeight}px`
+                      }}
                       onKeyDown={handleDraftKeyDown}
                       placeholder="Ask a follow-up question..."
-                      className="h-10 rounded-full border-0 bg-transparent px-3 shadow-none focus-visible:ring-0 focus-visible:ring-offset-0"
+                      className="min-h-10 max-h-40 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground"
                     />
                     <Button
                       type="submit"
