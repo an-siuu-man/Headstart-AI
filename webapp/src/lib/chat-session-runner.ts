@@ -10,7 +10,7 @@ import {
 } from "@/lib/chat-runtime-store";
 import {
   createHeadstartRun,
-  getSessionGuideAndHistory,
+  getSessionGuideAndRecentHistory,
   listSignedSnapshotPdfFiles,
   markHeadstartRunFailed,
   markHeadstartRunSucceeded,
@@ -52,6 +52,9 @@ const MAX_CHAT_FIELD_TEXT_CHARS = 2200;
 const MAX_CHAT_ARRAY_ITEMS = 20;
 const MAX_CHAT_OBJECT_KEYS = 40;
 const MAX_CHAT_OBJECT_DEPTH = 4;
+const FOLLOWUP_CHAT_HISTORY_LIMIT = 8;
+const ASSISTANT_PERSIST_INTERVAL_MS = 1500;
+type FollowupThinkingMode = "normal" | "thinking";
 
 function toErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
@@ -449,26 +452,42 @@ async function runFollowupChat(input: {
   sessionId: string;
   assistantMessageId: string;
   userMessageContent: string;
+  thinkingMode: FollowupThinkingMode;
 }) {
-  const { sessionId, assistantMessageId, userMessageContent } = input;
+  const { sessionId, assistantMessageId, userMessageContent, thinkingMode } = input;
 
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let bufferedDelta = "";
   let assistantContent = "";
   let persistChain: Promise<void> = Promise.resolve();
+  let lastPersistAt = 0;
+  let pendingPersist = false;
 
-  const persistAssistant = (content: string) => {
+  const persistAssistant = (content: string, metadata: Record<string, unknown>) => {
     persistChain = persistChain
       .then(async () => {
         await updateChatMessageContent({
           messageId: assistantMessageId,
           content,
-          metadata: {
-            streaming: true,
-          },
+          metadata,
         });
       })
       .catch(() => undefined);
+  };
+
+  const maybePersistAssistant = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastPersistAt < ASSISTANT_PERSIST_INTERVAL_MS) {
+      pendingPersist = true;
+      return;
+    }
+
+    pendingPersist = false;
+    lastPersistAt = now;
+    persistAssistant(assistantContent, {
+      streaming: true,
+      thinking_mode: thinkingMode,
+    });
   };
 
   const flushDelta = () => {
@@ -482,7 +501,7 @@ async function runFollowupChat(input: {
       delta,
       content: assistantContent,
     });
-    persistAssistant(assistantContent);
+    maybePersistAssistant();
   };
 
   try {
@@ -494,7 +513,10 @@ async function runFollowupChat(input: {
       error: undefined,
     });
 
-    const sessionContext = await getSessionGuideAndHistory(sessionId);
+    const sessionContext = await getSessionGuideAndRecentHistory(
+      sessionId,
+      FOLLOWUP_CHAT_HISTORY_LIMIT,
+    );
     if (!sessionContext) {
       throw new Error("Session context not found.");
     }
@@ -514,7 +536,7 @@ async function runFollowupChat(input: {
 
     const chatHistory = toAgentHistory(sessionContext.messages)
       .filter((message) => message.content.trim().length > 0)
-      .slice(-6);
+      .slice(-FOLLOWUP_CHAT_HISTORY_LIMIT);
     const assignmentPayload = sanitizeAssignmentPayloadForFollowup(sessionContext.payload);
 
     const streamResponse = await openAgentChatStream(
@@ -525,6 +547,7 @@ async function runFollowupChat(input: {
         chat_history: chatHistory,
         retrieval_context: retrievalContext,
         user_message: userMessageContent,
+        thinking_mode: thinkingMode === "thinking",
       }),
     );
 
@@ -567,6 +590,9 @@ async function runFollowupChat(input: {
 
       if (event === "chat.completed") {
         flushDelta();
+        if (pendingPersist) {
+          maybePersistAssistant(true);
+        }
 
         if (typeof data.assistant_message === "string") {
           const completedText = data.assistant_message;
@@ -575,7 +601,6 @@ async function runFollowupChat(input: {
           }
         }
 
-        persistAssistant(assistantContent);
         await persistChain;
 
         await updateChatMessageContent({
@@ -584,6 +609,7 @@ async function runFollowupChat(input: {
           metadata: {
             streaming: false,
             completed: true,
+            thinking_mode: thinkingMode,
           },
         });
 
@@ -619,6 +645,9 @@ async function runFollowupChat(input: {
     }
   } catch (err) {
     flushDelta();
+    if (pendingPersist) {
+      maybePersistAssistant(true);
+    }
     await persistChain;
 
     const errorMessage = toErrorMessage(err);
@@ -638,6 +667,7 @@ async function runFollowupChat(input: {
         streaming: false,
         failed: true,
         error: errorMessage,
+        thinking_mode: thinkingMode,
       },
     }).catch(() => undefined);
 
@@ -659,6 +689,10 @@ export function startFollowupChatRun(input: {
   sessionId: string;
   assistantMessageId: string;
   userMessageContent: string;
+  thinkingMode?: FollowupThinkingMode;
 }) {
-  void runFollowupChat(input);
+  void runFollowupChat({
+    ...input,
+    thinkingMode: input.thinkingMode ?? "normal",
+  });
 }

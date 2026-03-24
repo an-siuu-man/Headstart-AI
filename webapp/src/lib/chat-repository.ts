@@ -902,6 +902,13 @@ export async function createPersistedChatSession(input: {
 export async function getPersistedSessionSnapshot(
   sessionId: string,
 ): Promise<PersistedSessionSnapshot | null> {
+  return getPersistedSessionSnapshotWithMessageLimit(sessionId)
+}
+
+async function getPersistedSessionSnapshotWithMessageLimit(
+  sessionId: string,
+  messageLimit?: number,
+): Promise<PersistedSessionSnapshot | null> {
   const session = await selectFirst<DbChatSession>({
     table: "chat_sessions",
     query: {
@@ -921,38 +928,44 @@ export async function getPersistedSessionSnapshot(
     throw new Error(`assignment_ingests missing for assignment_uuid=${session.assignment_uuid}`);
   }
 
-  const snapshot = await selectFirst<DbAssignmentSnapshot>({
-    table: "assignment_snapshots",
-    query: {
-      id: eq(ingest.assignment_snapshot_id),
-      select: "id,raw_payload",
-      limit: 1,
-    },
-  });
+  const boundedMessageLimit =
+    typeof messageLimit === "number"
+      ? Math.max(1, Math.min(40, Math.floor(messageLimit)))
+      : null;
+
+  const [snapshot, messages, latestRun] = await Promise.all([
+    selectFirst<DbAssignmentSnapshot>({
+      table: "assignment_snapshots",
+      query: {
+        id: eq(ingest.assignment_snapshot_id),
+        select: "id,raw_payload",
+        limit: 1,
+      },
+    }),
+    selectMany<DbChatMessage>({
+      table: "chat_messages",
+      query: {
+        session_id: eq(session.id),
+        select:
+          "id,session_id,message_index,sender_role,content_text,content_format,metadata,created_at",
+        order: boundedMessageLimit == null ? "message_index.asc" : "message_index.desc",
+        ...(boundedMessageLimit == null ? {} : { limit: boundedMessageLimit }),
+      },
+    }),
+    selectFirst<DbHeadstartRun>({
+      table: "headstart_runs",
+      query: {
+        assignment_uuid: eq(session.assignment_uuid),
+        select: "id,assignment_uuid,attempt_no,status",
+        order: "attempt_no.desc",
+        limit: 1,
+      },
+    }),
+  ]);
 
   if (!snapshot) {
     throw new Error(`assignment_snapshots missing for id=${ingest.assignment_snapshot_id}`);
   }
-
-  const messages = await selectMany<DbChatMessage>({
-    table: "chat_messages",
-    query: {
-      session_id: eq(session.id),
-      select:
-        "id,session_id,message_index,sender_role,content_text,content_format,metadata,created_at",
-      order: "message_index.asc",
-    },
-  });
-
-  const latestRun = await selectFirst<DbHeadstartRun>({
-    table: "headstart_runs",
-    query: {
-      assignment_uuid: eq(session.assignment_uuid),
-      select: "id,assignment_uuid,attempt_no,status",
-      order: "attempt_no.desc",
-      limit: 1,
-    },
-  });
 
   let guideMarkdown = "";
   if (latestRun?.status === "succeeded") {
@@ -970,6 +983,8 @@ export async function getPersistedSessionSnapshot(
   const payload = sanitizePayloadForResponse(
     asObject(snapshot.raw_payload) as AssignmentPayload,
   );
+  const normalizedMessages =
+    boundedMessageLimit == null ? messages : [...messages].reverse();
 
   return {
     sessionId: session.id,
@@ -979,7 +994,7 @@ export async function getPersistedSessionSnapshot(
     updatedAt: toEpoch(session.updated_at),
     status: session.status,
     payload,
-    messages: messages.map((row) => toMessageDto(row)),
+    messages: normalizedMessages.map((row) => toMessageDto(row)),
     guideMarkdown,
   };
 }
@@ -1750,6 +1765,27 @@ export async function updateChatMessageContent(input: {
 
 export async function getSessionGuideAndHistory(sessionId: string) {
   const snapshot = await getPersistedSessionSnapshot(sessionId);
+  if (!snapshot) {
+    return null;
+  }
+
+  return {
+    payload: snapshot.payload,
+    guideMarkdown: snapshot.guideMarkdown,
+    messages: snapshot.messages,
+    userId: snapshot.userId,
+    assignmentUuid: snapshot.assignmentUuid,
+  };
+}
+
+export async function getSessionGuideAndRecentHistory(
+  sessionId: string,
+  historyLimit = 8,
+) {
+  const snapshot = await getPersistedSessionSnapshotWithMessageLimit(
+    sessionId,
+    historyLimit,
+  );
   if (!snapshot) {
     return null;
   }
