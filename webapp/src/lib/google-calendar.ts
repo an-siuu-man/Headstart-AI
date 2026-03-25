@@ -3,6 +3,7 @@ const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const GOOGLE_REVOKE_URL = "https://oauth2.googleapis.com/revoke";
 const GOOGLE_CALENDAR_EVENTS_URL =
   "https://www.googleapis.com/calendar/v3/calendars/primary/events";
+const GOOGLE_CALENDAR_MAX_RESULTS = 2500;
 
 const DEFAULT_SCOPES = [
   "https://www.googleapis.com/auth/calendar.events",
@@ -37,6 +38,21 @@ export type GoogleCalendarEventResult = {
   id: string;
   htmlLink: string | null;
   status: string | null;
+};
+
+export type GoogleCalendarListedEventDateTime = {
+  dateTime: string | null;
+  date: string | null;
+  timeZone: string | null;
+};
+
+export type GoogleCalendarListedEvent = {
+  id: string;
+  status: string | null;
+  summary: string | null;
+  htmlLink: string | null;
+  start: GoogleCalendarListedEventDateTime;
+  end: GoogleCalendarListedEventDateTime;
 };
 
 export class GoogleCalendarApiError extends Error {
@@ -215,6 +231,90 @@ export async function createGoogleCalendarEvent(input: {
   };
 }
 
+export async function listGoogleCalendarEvents(input: {
+  accessToken: string;
+  timeMinIso: string;
+  timeMaxIso: string;
+}) {
+  const events: GoogleCalendarListedEvent[] = [];
+  let nextPageToken: string | null = null;
+
+  do {
+    const page = await fetchGoogleCalendarEventsPage({
+      accessToken: input.accessToken,
+      timeMinIso: input.timeMinIso,
+      timeMaxIso: input.timeMaxIso,
+      pageToken: nextPageToken,
+    });
+
+    events.push(...page.items);
+    nextPageToken = page.nextPageToken;
+  } while (nextPageToken);
+
+  return events;
+}
+
+async function fetchGoogleCalendarEventsPage(input: {
+  accessToken: string;
+  timeMinIso: string;
+  timeMaxIso: string;
+  pageToken: string | null;
+}) {
+  const url = new URL(GOOGLE_CALENDAR_EVENTS_URL);
+  url.searchParams.set("timeMin", input.timeMinIso);
+  url.searchParams.set("timeMax", input.timeMaxIso);
+  url.searchParams.set("singleEvents", "true");
+  url.searchParams.set("orderBy", "startTime");
+  url.searchParams.set("maxResults", String(GOOGLE_CALENDAR_MAX_RESULTS));
+  if (input.pageToken) {
+    url.searchParams.set("pageToken", input.pageToken);
+  }
+
+  const response = await fetch(url.toString(), {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${input.accessToken}`,
+      Accept: "application/json",
+    },
+    cache: "no-store",
+  });
+
+  const raw = await response.text();
+  const parsed = safeParseJson(raw);
+
+  if (!response.ok) {
+    throw new GoogleCalendarApiError(
+      `Google Calendar events listing failed (${response.status})`,
+      response.status,
+      parsed ?? raw,
+    );
+  }
+
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error("Google Calendar events response was empty.");
+  }
+
+  const parsedRecord = parsed as Record<string, unknown>;
+  const itemsRaw = parsedRecord.items;
+  const items: unknown[] = Array.isArray(itemsRaw) ? itemsRaw : [];
+
+  return {
+    items: items
+      .filter((value): value is Record<string, unknown> => {
+        return Boolean(value && typeof value === "object" && !Array.isArray(value));
+      })
+      .map((item) => ({
+        id: readString(item, "id"),
+        status: readNullableString(item, "status"),
+        summary: readNullableString(item, "summary"),
+        htmlLink: readNullableString(item, "htmlLink"),
+        start: readDateTimeObject(item, "start"),
+        end: readDateTimeObject(item, "end"),
+      })),
+    nextPageToken: readNullableString(parsed, "nextPageToken"),
+  };
+}
+
 async function postGoogleToken(body: URLSearchParams) {
   const response = await fetch(GOOGLE_TOKEN_URL, {
     method: "POST",
@@ -242,6 +342,22 @@ async function postGoogleToken(body: URLSearchParams) {
   }
 
   return parsed;
+}
+
+function readDateTimeObject(source: unknown, key: string): GoogleCalendarListedEventDateTime {
+  const value = readNullableObject(source, key);
+  return {
+    dateTime: readNullableString(value, "dateTime"),
+    date: readNullableString(value, "date"),
+    timeZone: readNullableString(value, "timeZone"),
+  };
+}
+
+function readNullableObject(source: unknown, key: string) {
+  if (!source || typeof source !== "object") return null;
+  const value = (source as Record<string, unknown>)[key];
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  return value as Record<string, unknown>;
 }
 
 function safeParseJson(raw: string) {
@@ -274,3 +390,4 @@ function readNullableNumber(source: unknown, key: string) {
   const value = (source as Record<string, unknown>)[key];
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
+

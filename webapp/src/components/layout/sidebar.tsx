@@ -3,7 +3,17 @@
 import Link from "next/link"
 import { usePathname, useRouter } from "next/navigation"
 import { useState } from "react"
-import { Home, FileText, BookOpen, LogOut, BrainCircuit, MessageSquare, PanelLeftClose, PanelLeftOpen } from "lucide-react"
+import {
+  Home,
+  FileText,
+  BookOpen,
+  LogOut,
+  BrainCircuit,
+  MessageSquare,
+  CalendarDays,
+  PanelLeftClose,
+  PanelLeftOpen,
+} from "lucide-react"
 
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
@@ -11,6 +21,7 @@ import { Button } from "@/components/ui/button"
 const links = [
   { href: "/dashboard", label: "Dashboard", icon: Home },
   { href: "/dashboard/assignments", label: "Assignments", icon: FileText },
+  { href: "/dashboard/calendar", label: "Calendar", icon: CalendarDays },
   { href: "/dashboard/chat", label: "Chat", icon: MessageSquare },
   { href: "/dashboard/resources", label: "Resources", icon: BookOpen },
 ]
@@ -35,7 +46,7 @@ export function SidebarContent({
   isSigningOut = false,
 }: SidebarContentProps) {
   const pathname = usePathname()
-  
+
   return (
     <div className={cn("flex flex-col h-full", className)}>
       <div
@@ -73,7 +84,7 @@ export function SidebarContent({
           </Button>
         ) : null}
       </div>
-      
+
       <div className="flex-1 py-6 px-3">
         <nav className="flex flex-col gap-1">
           {links.map((link) => {
