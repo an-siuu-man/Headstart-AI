@@ -94,18 +94,6 @@ type DbChatMessageTimestampPreview = {
   created_at: string;
 };
 
-type DbHeadstartRun = {
-  id: string;
-  assignment_uuid: string;
-  attempt_no: number;
-  status: "queued" | "running" | "succeeded" | "failed" | "cancelled";
-};
-
-type DbHeadstartDocument = {
-  id: string;
-  run_id: string;
-  description: string;
-};
 
 type DbAssignmentUserState = {
   assignment_id: string;
@@ -138,11 +126,6 @@ export type SignedSnapshotPdfFile = {
   signedUrl: string;
 };
 
-export type RunPdfFileInput = {
-  filename: string;
-  fileSha256: string;
-  storageUri?: string | null;
-};
 
 function nowIso() {
   return new Date().toISOString();
@@ -716,18 +699,6 @@ async function deleteStoredBlobIfUnreferenced(input: {
     return false;
   }
 
-  const stillReferencedInRuns = await selectFirst<{ file_sha256: string }>({
-    table: "run_pdf_files",
-    query: {
-      file_sha256: eq(input.fileSha256),
-      select: "file_sha256",
-      limit: 1,
-    },
-  });
-  if (stillReferencedInRuns) {
-    return false;
-  }
-
   const blob = await selectFirst<DbStoredPdfBlob>({
     table: "stored_pdf_blobs",
     query: {
@@ -933,7 +904,7 @@ async function getPersistedSessionSnapshotWithMessageLimit(
       ? Math.max(1, Math.min(40, Math.floor(messageLimit)))
       : null;
 
-  const [snapshot, messages, latestRun] = await Promise.all([
+  const [snapshot, messages] = await Promise.all([
     selectFirst<DbAssignmentSnapshot>({
       table: "assignment_snapshots",
       query: {
@@ -952,39 +923,19 @@ async function getPersistedSessionSnapshotWithMessageLimit(
         ...(boundedMessageLimit == null ? {} : { limit: boundedMessageLimit }),
       },
     }),
-    selectFirst<DbHeadstartRun>({
-      table: "headstart_runs",
-      query: {
-        assignment_uuid: eq(session.assignment_uuid),
-        select: "id,assignment_uuid,attempt_no,status",
-        order: "attempt_no.desc",
-        limit: 1,
-      },
-    }),
   ]);
 
   if (!snapshot) {
     throw new Error(`assignment_snapshots missing for id=${ingest.assignment_snapshot_id}`);
   }
 
-  let guideMarkdown = "";
-  if (latestRun?.status === "succeeded") {
-    const doc = await selectFirst<DbHeadstartDocument>({
-      table: "headstart_documents",
-      query: {
-        run_id: eq(latestRun.id),
-        select: "id,run_id,description",
-        limit: 1,
-      },
-    });
-    guideMarkdown = doc?.description ?? "";
-  }
+  const allMessages = boundedMessageLimit == null ? messages : [...messages].reverse();
+  const guideMarkdown =
+    allMessages.find((m) => m.sender_role === "assistant")?.content_text ?? "";
 
   const payload = sanitizePayloadForResponse(
     asObject(snapshot.raw_payload) as AssignmentPayload,
   );
-  const normalizedMessages =
-    boundedMessageLimit == null ? messages : [...messages].reverse();
 
   return {
     sessionId: session.id,
@@ -994,7 +945,7 @@ async function getPersistedSessionSnapshotWithMessageLimit(
     updatedAt: toEpoch(session.updated_at),
     status: session.status,
     payload,
-    messages: normalizedMessages.map((row) => toMessageDto(row)),
+    messages: allMessages.map((row) => toMessageDto(row)),
     guideMarkdown,
   };
 }
@@ -1571,119 +1522,6 @@ export async function updateChatSessionStatus(
   });
 }
 
-export async function createHeadstartRun(input: {
-  assignmentUuid: string;
-  triggerSource: "user_click" | "retry" | "api";
-  modelName?: string;
-  promptVersion?: string;
-}) {
-  const latest = await selectFirst<DbHeadstartRun>({
-    table: "headstart_runs",
-    query: {
-      assignment_uuid: eq(input.assignmentUuid),
-      select: "id,assignment_uuid,attempt_no,status",
-      order: "attempt_no.desc",
-      limit: 1,
-    },
-  });
-  const attemptNo = (latest?.attempt_no ?? 0) + 1;
-
-  return insertSingle<DbHeadstartRun>({
-    table: "headstart_runs",
-    row: {
-      assignment_uuid: input.assignmentUuid,
-      attempt_no: attemptNo,
-      trigger_source: input.triggerSource,
-      status: "running",
-      model_name: input.modelName ?? null,
-      prompt_version: input.promptVersion ?? null,
-      started_at: nowIso(),
-    },
-  });
-}
-
-export async function markHeadstartRunSucceeded(runId: string) {
-  return patchSingle<DbHeadstartRun>({
-    table: "headstart_runs",
-    query: {
-      id: eq(runId),
-    },
-    patch: {
-      status: "succeeded",
-      finished_at: nowIso(),
-    },
-  });
-}
-
-export async function markHeadstartRunFailed(
-  runId: string,
-  errorMessage: string,
-  errorCode?: string,
-) {
-  return patchSingle<DbHeadstartRun>({
-    table: "headstart_runs",
-    query: {
-      id: eq(runId),
-    },
-    patch: {
-      status: "failed",
-      error_message: errorMessage,
-      error_code: errorCode ?? "RUN_FAILED",
-      finished_at: nowIso(),
-    },
-  });
-}
-
-export async function upsertHeadstartDocument(runId: string, guideMarkdown: string) {
-  return upsertSingle<DbHeadstartDocument>({
-    table: "headstart_documents",
-    onConflict: "run_id",
-    rows: [
-      {
-        run_id: runId,
-        description: guideMarkdown,
-        updated_at: nowIso(),
-      },
-    ],
-  });
-}
-
-export async function saveRunPdfFiles(
-  runId: string,
-  files: RunPdfFileInput[] | undefined,
-) {
-  if (!files || files.length === 0) {
-    return;
-  }
-
-  const rows = files
-    .filter((file) => file.fileSha256.trim().length > 0)
-    .map((file, index) => ({
-      run_id: runId,
-      filename: toOptionalString(file.filename) ?? `attachment-${index + 1}.pdf`,
-      file_sha256: file.fileSha256,
-      storage_uri: toOptionalString(file.storageUri) ?? null,
-      extraction_mode: "none",
-      page_count: null,
-    }));
-
-  if (rows.length === 0) {
-    return;
-  }
-
-  await supabaseTableRequest<unknown[]>({
-    table: "run_pdf_files",
-    method: "POST",
-    query: {
-      on_conflict: "run_id,filename,file_sha256",
-    },
-    headers: {
-      Prefer: "resolution=merge-duplicates,return=minimal",
-    },
-    body: rows,
-  });
-}
-
 async function getNextMessageIndex(sessionId: string) {
   const latest = await selectFirst<DbChatMessage>({
     table: "chat_messages",
@@ -1760,6 +1598,22 @@ export async function updateChatMessageContent(input: {
     patch,
   });
 
+  return toMessageDto(row);
+}
+
+export async function updateChatMessageMetadata(
+  sessionId: string,
+  messageId: string,
+  metadata: Record<string, unknown>,
+) {
+  const row = await patchSingle<DbChatMessage>({
+    table: "chat_messages",
+    query: {
+      id: eq(messageId),
+      session_id: eq(sessionId),
+    },
+    patch: { metadata },
+  });
   return toMessageDto(row);
 }
 

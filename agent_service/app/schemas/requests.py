@@ -52,3 +52,4 @@ class ChatStreamRequest(BaseModel):
     retrieval_context: List[RetrievalChunk] = []
     user_message: str
     thinking_mode: bool = False
+    calendar_context: Optional[Dict[str, Any]] = None

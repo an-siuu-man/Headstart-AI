@@ -2,29 +2,20 @@ import { NextResponse } from "next/server";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 import { listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
 import {
+  detectFreeSlots,
+  recommendStudySessions,
+  type PlannerAssignmentInput,
+  type PlannerBusyInterval,
+} from "@/lib/calendar-planner";
+import {
   GoogleCalendarApiError,
   listGoogleCalendarEvents,
   type GoogleCalendarListedEvent,
 } from "@/lib/google-calendar";
 import { ensureGoogleCalendarAccessToken } from "@/lib/google-calendar-session";
 import { upsertNeedsAttentionGoogleCalendarIntegration } from "@/lib/google-calendar-repository";
-import {
-  generateHeuristicWorkBlocks,
-  type PlannerAssignmentInput,
-  type PlannerBusyInterval,
-} from "@/lib/calendar-planner";
 
 export const runtime = "nodejs";
-
-type ProposalSuggestion = {
-  id: string;
-  assignment_id: string;
-  assignment_title: string;
-  start_iso: string;
-  end_iso: string;
-  focus: string;
-  priority: "high" | "medium" | "low";
-};
 
 export async function POST(req: Request) {
   const resolvedUser = await resolveRequestUser(req);
@@ -43,21 +34,12 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const startISO = toOptionalString(body?.start_iso);
-  const endISO = toOptionalString(body?.end_iso);
-  const timezone = toOptionalString(body?.timezone) ?? "UTC";
-  const replaceExisting =
-    typeof body?.replace_existing === "boolean" ? Boolean(body.replace_existing) : true;
-
-  const startAt = parseIso(startISO);
-  const endAt = parseIso(endISO);
-  if (!startAt || !endAt || endAt.getTime() <= startAt.getTime()) {
-    return NextResponse.json(
-      { error: "start_iso and end_iso must be valid ISO values with start < end" },
-      { status: 400 },
-    );
+  const assignmentId = toOptionalString(body?.assignment_id);
+  if (!assignmentId) {
+    return NextResponse.json({ error: "assignment_id is required" }, { status: 400 });
   }
 
+  const timezone = toOptionalString(body?.timezone) ?? "UTC";
   if (!isValidTimezone(timezone)) {
     return NextResponse.json(
       { error: "timezone must be a valid IANA time zone" },
@@ -65,32 +47,57 @@ export async function POST(req: Request) {
     );
   }
 
-  const normalizedStartISO = startAt.toISOString();
-  const normalizedEndISO = endAt.toISOString();
+  const rawEffort =
+    typeof body?.estimated_effort_minutes === "number"
+      ? body.estimated_effort_minutes
+      : null;
+  const estimatedEffortMinutes =
+    rawEffort !== null ? Math.max(30, Math.min(480, Math.round(rawEffort))) : undefined;
 
   try {
-    const assignments = await listCalendarAssignmentsForUser(userId);
-    const assignmentTitleById = new Map<string, string>();
+    // Resolve the target assignment
+    const allAssignments = await listCalendarAssignmentsForUser(userId);
+    const assignment = allAssignments.find((a) => a.assignmentId === assignmentId);
 
-    const plannerAssignments: PlannerAssignmentInput[] = assignments
-      .filter((assignment) => {
-        if (assignment.isSubmitted) return false;
-        if (!assignment.assignmentId || !assignment.dueAtISO) return false;
+    if (!assignment) {
+      return NextResponse.json(
+        { error: "Assignment not found for this user" },
+        { status: 404 },
+      );
+    }
 
-        const dueAt = parseIso(assignment.dueAtISO);
-        if (!dueAt) return false;
-        return isPointInRange(dueAt, startAt, endAt);
-      })
-      .map((assignment) => {
-        assignmentTitleById.set(assignment.assignmentId as string, assignment.title);
-        return {
-          assignmentId: assignment.assignmentId as string,
-          title: assignment.title,
-          dueAtISO: assignment.dueAtISO as string,
-          priority: assignment.priority,
-        };
+    if (assignment.isSubmitted) {
+      return NextResponse.json(
+        { error: "Assignment is already submitted" },
+        { status: 404 },
+      );
+    }
+
+    const now = new Date();
+    const dueAt = parseIso(assignment.dueAtISO);
+
+    // Due date in the past or missing → no slots possible
+    if (!dueAt || dueAt.getTime() <= now.getTime()) {
+      const response = NextResponse.json({
+        assignment_id: assignmentId,
+        timezone,
+        no_slots_found: true,
+        free_slots: [],
+        recommended_sessions: [],
+        integration: {
+          google: { status: "disconnected", connected: false },
+        },
       });
+      if (resolvedUser?.refreshedSession) {
+        applyAuthCookies(response, resolvedUser.refreshedSession);
+      }
+      return response;
+    }
 
+    const nowISO = now.toISOString();
+    const dueAtISO = dueAt.toISOString();
+
+    // Fetch Google Calendar busy intervals
     let googleBusy: PlannerBusyInterval[] = [];
     let googleStatus: "connected" | "disconnected" | "needs_attention" = "disconnected";
 
@@ -104,8 +111,8 @@ export async function POST(req: Request) {
       try {
         const listedEvents = await listGoogleCalendarEvents({
           accessToken: accessState.accessToken,
-          timeMinIso: normalizedStartISO,
-          timeMaxIso: normalizedEndISO,
+          timeMinIso: nowISO,
+          timeMaxIso: dueAtISO,
         });
 
         googleBusy = listedEvents
@@ -128,40 +135,37 @@ export async function POST(req: Request) {
       }
     }
 
-    const generatedDrafts = generateHeuristicWorkBlocks({
-      assignments: plannerAssignments,
+    const plannerAssignment: PlannerAssignmentInput = {
+      assignmentId: assignment.assignmentId as string,
+      title: assignment.title,
+      dueAtISO: dueAtISO,
+      priority: assignment.priority,
+    };
+
+    const freeSlots = detectFreeSlots({
+      assignment: plannerAssignment,
       busyIntervals: googleBusy,
-      rangeStartISO: normalizedStartISO,
-      rangeEndISO: normalizedEndISO,
+      nowISO,
     });
 
-    const suggestions: ProposalSuggestion[] = generatedDrafts.map((draft) => {
-      const assignmentTitle = assignmentTitleById.get(draft.assignmentId) ?? draft.title;
-      const priority = toSessionPriority(draft.metadata.priority);
-      return {
-        id: `${draft.assignmentId}:${draft.startAtISO}`,
-        assignment_id: draft.assignmentId,
-        assignment_title: assignmentTitle,
-        start_iso: draft.startAtISO,
-        end_iso: draft.endAtISO,
-        focus: `Planned study block for ${assignmentTitle}`,
-        priority,
-      };
+    const recommendedSessions = recommendStudySessions({
+      assignment: plannerAssignment,
+      freeSlots,
+      estimatedEffortMinutes,
     });
 
     const response = NextResponse.json({
-      ok: true,
-      generated_count: suggestions.length,
-      // Kept for API compatibility; proposal suggestions are ephemeral only.
-      requested_replace_existing: replaceExisting,
-      replace_existing_ignored: true,
+      assignment_id: assignmentId,
+      timezone,
+      no_slots_found: freeSlots.length === 0,
+      free_slots: freeSlots,
+      recommended_sessions: recommendedSessions,
       integration: {
         google: {
           status: googleStatus,
           connected: googleStatus === "connected",
         },
       },
-      suggestions,
     });
 
     if (resolvedUser?.refreshedSession) {
@@ -172,50 +176,30 @@ export async function POST(req: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: "Failed to generate work block suggestions", detail: message },
+      { error: "Failed to detect free slots", detail: message },
       { status: 500 },
     );
   }
 }
 
-function toSessionPriority(value: unknown): ProposalSuggestion["priority"] {
-  if (value === "High") return "high";
-  if (value === "Medium") return "medium";
-  return "low";
-}
-
 function normalizeGoogleBusyWindow(event: GoogleCalendarListedEvent): PlannerBusyInterval | null {
-  if (event.status === "cancelled") {
-    return null;
-  }
+  if (event.status === "cancelled") return null;
 
   if (event.start.dateTime) {
     const start = parseIso(event.start.dateTime);
     const end = parseIso(event.end.dateTime);
     if (!start || !end || end.getTime() <= start.getTime()) return null;
-
-    return {
-      startISO: start.toISOString(),
-      endISO: end.toISOString(),
-    };
+    return { startISO: start.toISOString(), endISO: end.toISOString() };
   }
 
   if (event.start.date) {
     const start = parseIso(event.start.date);
     const end = parseIso(event.end.date);
     if (!start || !end || end.getTime() <= start.getTime()) return null;
-
-    return {
-      startISO: start.toISOString(),
-      endISO: end.toISOString(),
-    };
+    return { startISO: start.toISOString(), endISO: end.toISOString() };
   }
 
   return null;
-}
-
-function isPointInRange(point: Date, rangeStart: Date, rangeEnd: Date) {
-  return point.getTime() >= rangeStart.getTime() && point.getTime() < rangeEnd.getTime();
 }
 
 function parseIso(value: string | null | undefined) {

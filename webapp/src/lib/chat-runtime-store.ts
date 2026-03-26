@@ -15,7 +15,8 @@ export type RuntimeChatEvent =
   | ({ type: "chat.message.created"; message: ChatMessageDto } & RuntimeEventBase)
   | ({ type: "chat.message.delta"; messageId: string; delta: string; content: string } & RuntimeEventBase)
   | ({ type: "chat.message.completed"; messageId: string; content: string } & RuntimeEventBase)
-  | ({ type: "chat.error"; message: string; messageId?: string } & RuntimeEventBase);
+  | ({ type: "chat.error"; message: string; messageId?: string } & RuntimeEventBase)
+  | ({ type: "calendar.proposal"; assistantMessageId: string; assignmentId: string; sessions: unknown[] } & RuntimeEventBase);
 
 type RuntimeListener = (event: RuntimeChatEvent) => void;
 
@@ -217,6 +218,24 @@ export function emitChatError(
     sessionId,
     message: input.message,
     messageId: input.messageId,
+    at: Date.now(),
+  });
+}
+
+export function emitCalendarProposal(
+  sessionId: string,
+  input: {
+    assistantMessageId: string;
+    assignmentId: string;
+    sessions: unknown[];
+  },
+) {
+  notify({
+    type: "calendar.proposal",
+    sessionId,
+    assistantMessageId: input.assistantMessageId,
+    assignmentId: input.assignmentId,
+    sessions: input.sessions,
     at: Date.now(),
   });
 }

@@ -11,19 +11,20 @@ The Next.js web app serves two roles:
 
 - `src/app/*`: App Router pages, layouts, and route handlers.
 - `src/app/dashboard/calendar/page.tsx`: Monthly planner view using FullCalendar.
-- `src/app/api/calendar/month/route.ts`: Aggregates assignment due events, Google events, and proposed work blocks for a range.
-- `src/app/api/calendar/proposals/generate/route.ts`: Generates and persists heuristic work block proposals.
+- `src/app/api/calendar/month/route.ts`: Aggregates assignment due events and Google events for a range.
+- `src/app/api/calendar/proposals/generate/route.ts`: Generates ephemeral heuristic scheduling suggestions.
 - `src/app/api/integrations/google-calendar/*`: OAuth/connectivity and event creation APIs.
-- `src/lib/calendar-repository.ts`: Calendar assignment/work-block persistence and retrieval.
+- `src/lib/calendar-repository.ts`: Calendar assignment retrieval from persisted chat/session context.
 - `src/lib/calendar-planner.ts`: Heuristic proposal generation.
 - `src/lib/google-calendar-session.ts`: Token resolution/refresh state handling.
 - `src/lib/google-calendar.ts`: Google Calendar API client (OAuth, list events, create events, revoke, refresh).
+- `src/lib/calendar-google-markers.ts`: Study-block marker contract and classification helpers.
 
 ## Module Boundaries
 
 - `app/api/*`: Transport handlers (auth resolution, request validation, response mapping, integration calls).
 - UI pages (`app/dashboard/*`): Rendering and user interactions.
-- `lib/calendar-*`: Planner-domain logic and table-level data access.
+- `lib/calendar-*`: Planner/domain logic and calendar event classification.
 - `lib/google-calendar*`: OAuth + provider API integration.
 - Session/auth helpers are centralized in `lib/auth/*` and consumed by route handlers.
 
@@ -42,42 +43,43 @@ The Next.js web app serves two roles:
 - `POST /api/integrations/google-calendar/disconnect`
 - `POST /api/integrations/google-calendar/events`
 
-### New (Calendar Planner)
+### Calendar Planner
 
 - `GET /api/calendar/month`
   - Requires authenticated user.
   - Inputs: `start_iso`, `end_iso`, `timezone`.
   - Output: merged events from three sources:
     - `assignment_due`
+    - `study_time_block`
     - `google_event`
-    - `proposed_block`
 
 - `POST /api/calendar/proposals/generate`
   - Requires authenticated user.
-  - Inputs: `start_iso`, `end_iso`, `timezone`, `replace_existing` (default `true`).
+  - Inputs: `start_iso`, `end_iso`, `timezone`, `replace_existing` (compatibility field).
   - Behavior:
     - Builds assignment planning candidates for in-range, unsubmitted assignments.
-    - Pulls busy intervals from Google events and retained work blocks.
-    - Generates heuristics and persists rows to `assignment_work_blocks`.
+    - Pulls busy intervals from Google events.
+    - Generates ephemeral heuristic suggestions (no DB persistence).
 
 ## Flow 1: Month Calendar Aggregation
 
 1. Client month view emits date range from FullCalendar (`datesSet`).
 2. UI calls `GET /api/calendar/month`.
 3. Route validates range/timezone and authenticates user.
-4. Route loads assignment due items and work blocks from repository.
+4. Route loads assignment due items from repository.
 5. Route resolves Google integration and lists events for the range (if connected).
-6. Route normalizes all sources to a single event schema and returns sorted results.
+6. Route classifies Google events as `study_time_block` (marker + legacy title fallback) or `google_event`.
+7. Route returns normalized, sorted events.
 
-## Flow 2: Proposal Generation
+## Flow 2: Proposal Generation and Scheduling
 
 1. User clicks `Generate Proposals` or `Regenerate` in `/dashboard/calendar`.
 2. UI calls `POST /api/calendar/proposals/generate`.
-3. Route validates inputs and loads in-range assignments + existing blocks.
+3. Route validates inputs and loads in-range assignments.
 4. Route fetches Google busy events when integration is connected.
-5. Route optionally deletes prior heuristic proposed blocks (`replace_existing=true`).
-6. Route generates non-overlapping work blocks via `generateHeuristicWorkBlocks`.
-7. Route inserts generated rows into `assignment_work_blocks` and returns block payloads.
+5. Route generates non-overlapping heuristic suggestions via `generateHeuristicWorkBlocks`.
+6. UI lets user select suggestions and schedule them through `POST /api/calendar/schedule`.
+7. Scheduled suggestions are created only in Google Calendar and then show in month view as `study_time_block`.
 
 ## Planner Heuristics
 
@@ -86,14 +88,15 @@ The Next.js web app serves two roles:
   - Medium: 2 x 90m at 96h, 24h pre-deadline.
   - Low: 1 x 60m at 24h pre-deadline.
 - Candidate windows shift backward by 30 minutes on overlap.
-- Schedules avoid known busy intervals and existing retained blocks.
-- Returned blocks are limited to the requested range.
+- Schedules avoid known Google busy intervals.
+- Returned suggestions are limited to the requested range.
 
 ## Data and Persistence
 
-- Planner table: `public.assignment_work_blocks`.
-- Migration script: `supabase/migrations/20260325_calendar_work_blocks.sql`.
-- Supporting assignment source data comes from persisted chat session context + assignment submission state.
+- Local planner table `public.assignment_work_blocks` has been removed.
+- Historical create migration: `supabase/migrations/20260325_calendar_work_blocks.sql`.
+- Removal migration: `supabase/migrations/20260326_drop_assignment_work_blocks.sql`.
+- Study-session identity is stored on Google events via private extended properties.
 
 ## Configuration and Dependencies
 

@@ -56,6 +56,7 @@ def _stream_headstart_chat_answer(
     retrieval_context: list[dict],
     user_message: str,
     include_thinking: bool = False,
+    calendar_context: dict | None = None,
 ):
     """Lazy import to avoid loading LLM dependencies at module import time."""
     from ..orchestrators.headstart_orchestrator import stream_headstart_chat_answer
@@ -67,6 +68,7 @@ def _stream_headstart_chat_answer(
         retrieval_context=retrieval_context,
         user_message=user_message,
         include_thinking=include_thinking,
+        calendar_context=calendar_context,
     )
 
 
@@ -333,6 +335,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             retrieval_context=[item.model_dump() for item in req.retrieval_context],
             user_message=req.user_message,
             include_thinking=req.thinking_mode,
+            calendar_context=req.calendar_context,
         ):
             delta, reasoning_delta = _split_stream_chunk(chunk)
             if not delta and not reasoning_delta:

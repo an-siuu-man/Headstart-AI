@@ -14,18 +14,16 @@ import {
   CalendarDays,
   CalendarX,
   Loader2,
-  RefreshCcw,
-  Sparkles,
   Wifi,
   WifiOff,
 } from "lucide-react"
 
+import { AssignmentSchedulePanel } from "@/components/calendar/assignment-schedule-panel"
 import { Badge } from "@/components/ui/badge"
-import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 
-type CalendarEventSource = "assignment_due" | "google_event" | "proposed_block"
+type CalendarEventSource = "assignment_due" | "google_event" | "study_time_block"
 type GoogleIntegrationStatus = "connected" | "disconnected" | "needs_attention"
 
 type CalendarApiEvent = {
@@ -85,13 +83,18 @@ export default function DashboardCalendarPage() {
   const [events, setEvents] = useState<CalendarApiEvent[]>([])
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
-  const [isGenerating, setIsGenerating] = useState(false)
   const [reloadNonce, setReloadNonce] = useState(0)
   const [googleStatus, setGoogleStatus] = useState<GoogleIntegrationStatus>("disconnected")
 
   const [showAssignmentDue, setShowAssignmentDue] = useState(true)
   const [showGoogleEvents, setShowGoogleEvents] = useState(true)
-  const [showProposedBlocks, setShowProposedBlocks] = useState(true)
+  const [showStudyBlocks, setShowStudyBlocks] = useState(true)
+  const [panelAssignment, setPanelAssignment] = useState<{
+    assignmentId: string
+    title: string
+    dueAtISO: string | null
+    url: string | null
+  } | null>(null)
 
   useEffect(() => {
     if (!range) return
@@ -147,17 +150,17 @@ export default function DashboardCalendarPage() {
     return events
       .filter((event) => {
         if (event.source === "assignment_due") return showAssignmentDue
-        if (event.source === "google_event") return showGoogleEvents
-        return showProposedBlocks
+        if (event.source === "study_time_block") return showStudyBlocks
+        return showGoogleEvents
       })
       .map((event) => toFullCalendarEvent(event, isDark))
-  }, [events, showAssignmentDue, showGoogleEvents, showProposedBlocks, isDark])
+  }, [events, isDark, showAssignmentDue, showGoogleEvents, showStudyBlocks])
 
   const sourceCounts = useMemo(
     () => ({
       assignmentDue: events.filter((e) => e.source === "assignment_due").length,
+      studyBlocks: events.filter((e) => e.source === "study_time_block").length,
       googleEvents: events.filter((e) => e.source === "google_event").length,
-      proposedBlocks: events.filter((e) => e.source === "proposed_block").length,
     }),
     [events],
   )
@@ -171,10 +174,22 @@ export default function DashboardCalendarPage() {
 
   const onEventClick = useCallback(
     (arg: EventClickArg) => {
+      arg.jsEvent.preventDefault()
+
+      const rawEvent = events.find((e) => e.id === arg.event.id)
+      if (rawEvent?.source === "assignment_due" && rawEvent.assignment_id) {
+        setPanelAssignment({
+          assignmentId: rawEvent.assignment_id,
+          title: rawEvent.title,
+          dueAtISO: rawEvent.start_iso,
+          url: rawEvent.url,
+        })
+        return
+      }
+
       const target = arg.event.url
       if (!target) return
 
-      arg.jsEvent.preventDefault()
       if (target.startsWith("http")) {
         window.open(target, "_blank", "noopener,noreferrer")
         return
@@ -182,42 +197,7 @@ export default function DashboardCalendarPage() {
 
       router.push(target)
     },
-    [router],
-  )
-
-  const generateBlocks = useCallback(
-    async (replaceExisting: boolean) => {
-      if (!range) return
-
-      setIsGenerating(true)
-      setLoadError(null)
-
-      try {
-        const response = await fetch("/api/calendar/proposals/generate", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            start_iso: range.startISO,
-            end_iso: range.endISO,
-            timezone,
-            replace_existing: replaceExisting,
-          }),
-        })
-
-        if (!response.ok) {
-          const bodyText = await response.text()
-          throw new Error(bodyText || `Failed to generate proposals (${response.status})`)
-        }
-
-        setReloadNonce((v) => v + 1)
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error)
-        setLoadError(message)
-      } finally {
-        setIsGenerating(false)
-      }
-    },
-    [range, timezone],
+    [events, router],
   )
 
   return (
@@ -227,7 +207,6 @@ export default function DashboardCalendarPage() {
       initial={reduceMotion ? false : "hidden"}
       animate={reduceMotion ? undefined : "show"}
     >
-      {/* Header */}
       <motion.div
         variants={reduceMotion ? undefined : pageSection}
         className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"
@@ -235,32 +214,15 @@ export default function DashboardCalendarPage() {
         <div>
           <h2 className="text-3xl font-heading font-bold tracking-tight">Calendar Planner</h2>
           <p className="text-muted-foreground">
-            Monthly view of assignment deadlines, Google events, and proposed work blocks.
+            Monthly view of assignment deadlines and Google Calendar events.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
           <GoogleStatusBadge status={googleStatus} />
-          <Button
-            variant="outline"
-            disabled={!range || isGenerating}
-            onClick={() => void generateBlocks(false)}
-          >
-            {isGenerating ? (
-              <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            ) : (
-              <Sparkles className="mr-2 h-4 w-4" />
-            )}
-            Generate Proposals
-          </Button>
-          <Button disabled={!range || isGenerating} onClick={() => void generateBlocks(true)}>
-            <RefreshCcw className={cn("mr-2 h-4 w-4", isGenerating && "animate-spin")} />
-            Regenerate
-          </Button>
         </div>
       </motion.div>
 
-      {/* Error banner */}
       <AnimatePresence>
         {loadError && (
           <motion.div
@@ -278,14 +240,27 @@ export default function DashboardCalendarPage() {
         )}
       </AnimatePresence>
 
-      {/* Calendar card */}
-      <motion.div variants={reduceMotion ? undefined : pageSection} className="flex-1">
+      <motion.div variants={reduceMotion ? undefined : pageSection} className="relative flex-1">
+        <AnimatePresence>
+          {panelAssignment && (
+            <AssignmentSchedulePanel
+              assignmentId={panelAssignment.assignmentId}
+              title={panelAssignment.title}
+              dueAtISO={panelAssignment.dueAtISO}
+              chatUrl={panelAssignment.url}
+              timezone={timezone}
+              isDark={isDark}
+              onClose={() => setPanelAssignment(null)}
+              onScheduled={() => setReloadNonce((n) => n + 1)}
+            />
+          )}
+        </AnimatePresence>
         <Card className="border-border/60 bg-card/90 shadow-[0_14px_36px_-24px_rgba(15,23,42,0.5)]">
           <CardHeader>
             <CardTitle>Monthly Calendar</CardTitle>
             <CardDescription>
-              Toggle each source to focus on assignments, Google events, or your generated work
-              plan.
+              Toggle each source to focus on assignment deadlines, study blocks, or other Google
+              Calendar events.
             </CardDescription>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <SourceToggle
@@ -297,20 +272,20 @@ export default function DashboardCalendarPage() {
                 icon={CalendarX}
               />
               <SourceToggle
+                label="Study Time Blocks"
+                count={sourceCounts.studyBlocks}
+                active={showStudyBlocks}
+                onToggle={() => setShowStudyBlocks((v) => !v)}
+                dotClass="bg-blue-500"
+                icon={CalendarDays}
+              />
+              <SourceToggle
                 label="Google Events"
                 count={sourceCounts.googleEvents}
                 active={showGoogleEvents}
                 onToggle={() => setShowGoogleEvents((v) => !v)}
                 dotClass="bg-teal-500"
                 icon={CalendarCheck}
-              />
-              <SourceToggle
-                label="Proposed Blocks"
-                count={sourceCounts.proposedBlocks}
-                active={showProposedBlocks}
-                onToggle={() => setShowProposedBlocks((v) => !v)}
-                dotClass="bg-blue-500"
-                icon={CalendarDays}
               />
             </div>
           </CardHeader>
@@ -331,7 +306,6 @@ export default function DashboardCalendarPage() {
                 datesSet={onDatesSet}
               />
 
-              {/* Loading overlay */}
               <AnimatePresence>
                 {isLoading && (
                   <motion.div
@@ -343,7 +317,7 @@ export default function DashboardCalendarPage() {
                     className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center gap-2 text-sm text-muted-foreground"
                   >
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Loading calendar…
+                    Loading calendar...
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -443,15 +417,15 @@ function eventTone(event: CalendarApiEvent, isDark: boolean) {
       : { background: "#fee2e2", border: "#dc2626", text: "#991b1b" }
   }
 
-  if (event.source === "google_event") {
+  if (event.source === "study_time_block") {
     return isDark
-      ? { background: "rgba(19, 78, 74, 0.32)", border: "#2dd4bf", text: "#99f6e4" }
-      : { background: "#ccfbf1", border: "#0f766e", text: "#134e4a" }
+      ? { background: "rgba(30, 58, 138, 0.32)", border: "#60a5fa", text: "#bfdbfe" }
+      : { background: "#dbeafe", border: "#2563eb", text: "#1e3a8a" }
   }
 
   return isDark
-    ? { background: "rgba(30, 58, 138, 0.32)", border: "#60a5fa", text: "#bfdbfe" }
-    : { background: "#dbeafe", border: "#2563eb", text: "#1e3a8a" }
+    ? { background: "rgba(19, 78, 74, 0.32)", border: "#2dd4bf", text: "#99f6e4" }
+    : { background: "#ccfbf1", border: "#0f766e", text: "#134e4a" }
 }
 
 function googleStatusTone(status: GoogleIntegrationStatus) {

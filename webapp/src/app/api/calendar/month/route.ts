@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
-import {
-  listAssignmentWorkBlocksForRange,
-  listCalendarAssignmentsForUser,
-} from "@/lib/calendar-repository";
+import { listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
 import {
   GoogleCalendarApiError,
   listGoogleCalendarEvents,
@@ -11,10 +8,11 @@ import {
 } from "@/lib/google-calendar";
 import { ensureGoogleCalendarAccessToken } from "@/lib/google-calendar-session";
 import { upsertNeedsAttentionGoogleCalendarIntegration } from "@/lib/google-calendar-repository";
+import { isStudyTimeBlockGoogleEvent } from "@/lib/calendar-google-markers";
 
 export const runtime = "nodejs";
 
-type CalendarEventSource = "assignment_due" | "google_event" | "proposed_block";
+type CalendarEventSource = "assignment_due" | "google_event" | "study_time_block";
 
 type CalendarEventPayload = {
   id: string;
@@ -65,15 +63,7 @@ export async function GET(req: Request) {
   const normalizedEndISO = endAt.toISOString();
 
   try {
-    const [assignments, workBlocks] = await Promise.all([
-      listCalendarAssignmentsForUser(userId),
-      listAssignmentWorkBlocksForRange({
-        userId,
-        startISO: normalizedStartISO,
-        endISO: normalizedEndISO,
-        statuses: ["proposed", "accepted"],
-      }),
-    ]);
+    const assignments = await listCalendarAssignmentsForUser(userId);
 
     const assignmentEvents: CalendarEventPayload[] = [];
     for (const assignment of assignments) {
@@ -97,19 +87,6 @@ export async function GET(req: Request) {
           : null,
       });
     }
-
-    const blockEvents: CalendarEventPayload[] = workBlocks.map((block) => ({
-      id: `work-${block.id}`,
-      source: "proposed_block",
-      title: block.title,
-      start_iso: block.startAtISO,
-      end_iso: block.endAtISO,
-      all_day: false,
-      assignment_id: block.assignmentId,
-      google_event_id: block.googleEventId,
-      status: block.status,
-      url: null,
-    }));
 
     let googleStatus: "connected" | "disconnected" | "needs_attention" = "disconnected";
     let googleConnected = false;
@@ -153,7 +130,7 @@ export async function GET(req: Request) {
       }
     }
 
-    const events = [...assignmentEvents, ...blockEvents, ...googleEvents].sort((left, right) => {
+    const events = [...assignmentEvents, ...googleEvents].sort((left, right) => {
       const leftTs = toSortableTimestamp(left.start_iso);
       const rightTs = toSortableTimestamp(right.start_iso);
       if (leftTs !== rightTs) return leftTs - rightTs;
@@ -210,7 +187,7 @@ function mapGoogleEvent(
 
   return {
     id: `google-${event.id}`,
-    source: "google_event",
+    source: isStudyTimeBlockGoogleEvent(event) ? "study_time_block" : "google_event",
     title: event.summary ?? "(Untitled event)",
     start_iso: normalized.startISO,
     end_iso: normalized.endISO,

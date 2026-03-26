@@ -32,6 +32,7 @@ export type GoogleCalendarEventInput = {
   startIso: string;
   endIso: string;
   timezone?: string;
+  extendedPropertiesPrivate?: Record<string, string>;
 };
 
 export type GoogleCalendarEventResult = {
@@ -53,6 +54,10 @@ export type GoogleCalendarListedEvent = {
   htmlLink: string | null;
   start: GoogleCalendarListedEventDateTime;
   end: GoogleCalendarListedEventDateTime;
+  extendedProperties: {
+    private: Record<string, string>;
+    shared: Record<string, string>;
+  };
 };
 
 export class GoogleCalendarApiError extends Error {
@@ -187,6 +192,14 @@ export async function createGoogleCalendarEvent(input: {
   accessToken: string;
   event: GoogleCalendarEventInput;
 }): Promise<GoogleCalendarEventResult> {
+  const extendedProperties =
+    input.event.extendedPropertiesPrivate &&
+    Object.keys(input.event.extendedPropertiesPrivate).length > 0
+      ? {
+          private: input.event.extendedPropertiesPrivate,
+        }
+      : undefined;
+
   const response = await fetch(GOOGLE_CALENDAR_EVENTS_URL, {
     method: "POST",
     headers: {
@@ -205,6 +218,7 @@ export async function createGoogleCalendarEvent(input: {
         dateTime: input.event.endIso,
         ...(input.event.timezone ? { timeZone: input.event.timezone } : {}),
       },
+      ...(extendedProperties ? { extendedProperties } : {}),
     }),
     cache: "no-store",
   });
@@ -310,6 +324,7 @@ async function fetchGoogleCalendarEventsPage(input: {
         htmlLink: readNullableString(item, "htmlLink"),
         start: readDateTimeObject(item, "start"),
         end: readDateTimeObject(item, "end"),
+        extendedProperties: readExtendedProperties(item),
       })),
     nextPageToken: readNullableString(parsed, "nextPageToken"),
   };
@@ -358,6 +373,28 @@ function readNullableObject(source: unknown, key: string) {
   const value = (source as Record<string, unknown>)[key];
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
+}
+
+function readExtendedProperties(source: unknown) {
+  const extended = readNullableObject(source, "extendedProperties");
+  return {
+    private: readStringRecord(extended, "private"),
+    shared: readStringRecord(extended, "shared"),
+  };
+}
+
+function readStringRecord(source: unknown, key: string): Record<string, string> {
+  const value = readNullableObject(source, key);
+  if (!value) return {};
+
+  const output: Record<string, string> = {};
+  for (const [entryKey, entryValue] of Object.entries(value)) {
+    if (typeof entryValue !== "string") continue;
+    const trimmed = entryValue.trim();
+    if (!trimmed) continue;
+    output[entryKey] = trimmed;
+  }
+  return output;
 }
 
 function safeParseJson(raw: string) {
