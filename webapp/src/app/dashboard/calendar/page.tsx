@@ -20,6 +20,7 @@ import {
   WifiOff,
 } from "lucide-react"
 
+import { AssignmentSchedulePanel } from "@/components/calendar/assignment-schedule-panel"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -92,6 +93,12 @@ export default function DashboardCalendarPage() {
   const [showAssignmentDue, setShowAssignmentDue] = useState(true)
   const [showGoogleEvents, setShowGoogleEvents] = useState(true)
   const [showProposedBlocks, setShowProposedBlocks] = useState(true)
+  const [panelAssignment, setPanelAssignment] = useState<{
+    assignmentId: string
+    title: string
+    dueAtISO: string | null
+    url: string | null
+  } | null>(null)
 
   useEffect(() => {
     if (!range) return
@@ -171,10 +178,23 @@ export default function DashboardCalendarPage() {
 
   const onEventClick = useCallback(
     (arg: EventClickArg) => {
+      arg.jsEvent.preventDefault()
+
+      // Intercept assignment_due clicks → open the schedule panel instead of navigating
+      const rawEvent = events.find((e) => e.id === arg.event.id)
+      if (rawEvent?.source === "assignment_due" && rawEvent.assignment_id) {
+        setPanelAssignment({
+          assignmentId: rawEvent.assignment_id,
+          title: rawEvent.title,
+          dueAtISO: rawEvent.start_iso,
+          url: rawEvent.url,
+        })
+        return
+      }
+
       const target = arg.event.url
       if (!target) return
 
-      arg.jsEvent.preventDefault()
       if (target.startsWith("http")) {
         window.open(target, "_blank", "noopener,noreferrer")
         return
@@ -182,7 +202,7 @@ export default function DashboardCalendarPage() {
 
       router.push(target)
     },
-    [router],
+    [router, events],
   )
 
   const generateBlocks = useCallback(
@@ -279,7 +299,21 @@ export default function DashboardCalendarPage() {
       </AnimatePresence>
 
       {/* Calendar card */}
-      <motion.div variants={reduceMotion ? undefined : pageSection} className="flex-1">
+      <motion.div variants={reduceMotion ? undefined : pageSection} className="relative flex-1">
+        <AnimatePresence>
+          {panelAssignment && (
+            <AssignmentSchedulePanel
+              assignmentId={panelAssignment.assignmentId}
+              title={panelAssignment.title}
+              dueAtISO={panelAssignment.dueAtISO}
+              chatUrl={panelAssignment.url}
+              timezone={timezone}
+              isDark={isDark}
+              onClose={() => setPanelAssignment(null)}
+              onScheduled={() => setReloadNonce((n) => n + 1)}
+            />
+          )}
+        </AnimatePresence>
         <Card className="border-border/60 bg-card/90 shadow-[0_14px_36px_-24px_rgba(15,23,42,0.5)]">
           <CardHeader>
             <CardTitle>Monthly Calendar</CardTitle>

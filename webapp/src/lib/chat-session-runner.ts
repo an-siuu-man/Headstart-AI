@@ -1,5 +1,6 @@
 import {
   appendRuntimeGuideDelta,
+  emitCalendarProposal,
   emitChatError,
   emitChatMessageCompleted,
   emitChatMessageDelta,
@@ -9,16 +10,18 @@ import {
   setRuntimeProgress,
 } from "@/lib/chat-runtime-store";
 import {
-  createHeadstartRun,
   getSessionGuideAndRecentHistory,
   listSignedSnapshotPdfFiles,
-  markHeadstartRunFailed,
-  markHeadstartRunSucceeded,
-  saveRunPdfFiles,
   updateChatMessageContent,
   updateChatSessionStatus,
-  upsertHeadstartDocument,
 } from "@/lib/chat-repository";
+import {
+  listAssignmentWorkBlocksForRange,
+  listCalendarAssignmentsForUser,
+} from "@/lib/calendar-repository";
+import { detectFreeSlots, recommendStudySessions } from "@/lib/calendar-planner";
+import { ensureGoogleCalendarAccessToken } from "@/lib/google-calendar-session";
+import { GoogleCalendarApiError, listGoogleCalendarEvents } from "@/lib/google-calendar";
 import { type AssignmentPayload } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
 import { retrieveLexicalContext } from "@/lib/rag/lexical-retriever";
@@ -183,6 +186,99 @@ function toPercent(value: unknown, fallback: number) {
   return Math.max(0, Math.min(100, Math.round(parsed)));
 }
 
+const SCHEDULING_KEYWORDS = [
+  "schedule",
+  "study time",
+  "calendar",
+  "free time",
+  "time slot",
+  "find time",
+  "plan my",
+  "add to calendar",
+  "study session",
+  "when should i study",
+];
+
+function hasSchedulingIntent(message: string): boolean {
+  const lower = message.toLowerCase();
+  return SCHEDULING_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+async function fetchCalendarContextForSession(
+  userId: string,
+  sessionId: string,
+  timezone: string,
+): Promise<{ context: object; assignmentRecordId: string } | null> {
+  const allAssignments = await listCalendarAssignmentsForUser(userId);
+  // Match by the session ID — sessions are ordered by updated_at desc so
+  // the active session will be the latestSessionId for its assignment.
+  const assignment = allAssignments.find((a) => a.latestSessionId === sessionId)
+    ?? allAssignments.find((a) => typeof a.assignmentId === "string" && a.assignmentId.length > 0 && !a.isSubmitted && !!a.dueAtISO);
+  if (!assignment || assignment.isSubmitted || !assignment.dueAtISO) return null;
+
+  const assignmentRecordId = (assignment.assignmentId as string | null | undefined) ?? "";
+
+  const now = new Date();
+  const dueAt = new Date(assignment.dueAtISO);
+  if (Number.isNaN(dueAt.getTime()) || dueAt.getTime() <= now.getTime()) return null;
+
+  const nowISO = now.toISOString();
+  const dueAtISO = dueAt.toISOString();
+
+  const [workBlocks, googleBusy] = await Promise.all([
+    listAssignmentWorkBlocksForRange({
+      userId,
+      startISO: nowISO,
+      endISO: dueAtISO,
+      statuses: ["proposed", "accepted"],
+    }).catch(() => [] as Awaited<ReturnType<typeof listAssignmentWorkBlocksForRange>>),
+    (async () => {
+      try {
+        const requestUrl = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+        const accessState = await ensureGoogleCalendarAccessToken({ userId, requestUrl });
+        if (!accessState.connected || !accessState.accessToken) return [];
+        const events = await listGoogleCalendarEvents({
+          accessToken: accessState.accessToken,
+          timeMinIso: nowISO,
+          timeMaxIso: dueAtISO,
+        });
+        return events
+          .filter((e) => e.status !== "cancelled" && e.start.dateTime)
+          .map((e) => ({ startISO: e.start.dateTime!, endISO: e.end.dateTime! }));
+      } catch (err) {
+        if (err instanceof GoogleCalendarApiError) return [];
+        return [];
+      }
+    })(),
+  ]);
+
+  const busyIntervals = [
+    ...workBlocks.map((b) => ({ startISO: b.startAtISO, endISO: b.endAtISO })),
+    ...googleBusy,
+  ];
+
+  const plannerAssignment = {
+    assignmentId: assignmentRecordId,
+    title: assignment.title,
+    dueAtISO,
+    priority: assignment.priority,
+  };
+
+  const freeSlots = detectFreeSlots({ assignment: plannerAssignment, busyIntervals, nowISO });
+  const recommendedSessions = recommendStudySessions({ assignment: plannerAssignment, freeSlots });
+
+  return {
+    assignmentRecordId,
+    context: {
+      assignment_id: assignmentRecordId,
+      timezone,
+      no_slots_found: freeSlots.length === 0,
+      free_slots: freeSlots,
+      recommended_sessions: recommendedSessions,
+    },
+  };
+}
+
 async function openAgentRunStream(agentUrl: string, body: string) {
   const primaryUrl = `${agentUrl}/api/v1/runs/stream`;
   const primary = await fetch(primaryUrl, {
@@ -238,7 +334,6 @@ async function runInitialGuide(input: {
   payload: AssignmentPayload;
 }) {
   const { sessionId, assignmentUuid, payload } = input;
-  let runId = "";
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let bufferedDelta = "";
   let bufferedProgress: number | null = null;
@@ -280,23 +375,7 @@ async function runInitialGuide(input: {
       error: undefined,
     });
 
-    const run = await createHeadstartRun({
-      assignmentUuid,
-      triggerSource: "user_click",
-      modelName: "nvidia/llama-3.3-nemotron-super-49b-v1.5",
-      promptVersion: "guide-v1",
-    });
-    runId = run.id;
-
     const snapshotPdfFiles = await listSignedSnapshotPdfFiles(assignmentUuid);
-    await saveRunPdfFiles(
-      run.id,
-      snapshotPdfFiles.map((file) => ({
-        filename: file.filename,
-        fileSha256: file.fileSha256,
-        storageUri: file.storagePath,
-      })),
-    );
 
     const payloadWithoutPdfs = { ...payload } as AssignmentPayload;
     delete payloadWithoutPdfs.pdfAttachments;
@@ -387,8 +466,6 @@ async function runInitialGuide(input: {
           throw new Error("Agent returned empty guide markdown");
         }
 
-        await upsertHeadstartDocument(run.id, guideMarkdown);
-        await markHeadstartRunSucceeded(run.id);
         await updateChatSessionStatus(sessionId, "completed");
 
         markRuntimeCompleted(sessionId, guideMarkdown);
@@ -412,9 +489,6 @@ async function runInitialGuide(input: {
     }
   } catch (err) {
     const message = toErrorMessage(err);
-    if (runId) {
-      await markHeadstartRunFailed(runId, message).catch(() => undefined);
-    }
     await updateChatSessionStatus(sessionId, "failed").catch(() => undefined);
     markRuntimeFailed(sessionId, message);
   } finally {
@@ -539,6 +613,21 @@ async function runFollowupChat(input: {
       .slice(-FOLLOWUP_CHAT_HISTORY_LIMIT);
     const assignmentPayload = sanitizeAssignmentPayloadForFollowup(sessionContext.payload);
 
+    // Fetch calendar context if the message has scheduling intent
+    let calendarContext: object | null = null;
+    let resolvedAssignmentRecordId: string | null = null;
+    if (hasSchedulingIntent(userMessageContent)) {
+      const calendarResult = await fetchCalendarContextForSession(
+        sessionContext.userId,
+        sessionId,
+        String(sessionContext.payload.userTimezone ?? "UTC"),
+      ).catch(() => null);
+      if (calendarResult) {
+        calendarContext = calendarResult.context;
+        resolvedAssignmentRecordId = calendarResult.assignmentRecordId;
+      }
+    }
+
     const streamResponse = await openAgentChatStream(
       agentUrl,
       JSON.stringify({
@@ -548,6 +637,7 @@ async function runFollowupChat(input: {
         retrieval_context: retrievalContext,
         user_message: userMessageContent,
         thinking_mode: thinkingMode === "thinking",
+        calendar_context: calendarContext,
       }),
     );
 
@@ -603,6 +693,35 @@ async function runFollowupChat(input: {
 
         await persistChain;
 
+        // Extract <calendar_proposal> blocks before persisting visible content
+        const PROPOSAL_RE = /<calendar_proposal>([\s\S]*?)<\/calendar_proposal>/g;
+        let proposalMatch: RegExpExecArray | null;
+        let firstProposal: { assignmentId: string; sessions: unknown[] } | null = null;
+        while ((proposalMatch = PROPOSAL_RE.exec(assistantContent)) !== null) {
+          try {
+            const parsed = JSON.parse(proposalMatch[1].trim()) as { sessions?: unknown[] };
+            if (Array.isArray(parsed.sessions) && parsed.sessions.length > 0) {
+              emitCalendarProposal(sessionId, {
+                assistantMessageId,
+                assignmentId: resolvedAssignmentRecordId ?? "",
+                sessions: parsed.sessions,
+              });
+              if (!firstProposal) {
+                firstProposal = {
+                  assignmentId: resolvedAssignmentRecordId ?? "",
+                  sessions: parsed.sessions,
+                };
+              }
+            }
+          } catch {
+            // Silently ignore malformed proposal blocks
+          }
+        }
+        // Strip the raw tag from the stored/displayed content
+        assistantContent = assistantContent
+          .replace(/<calendar_proposal>[\s\S]*?<\/calendar_proposal>/g, "")
+          .trim();
+
         await updateChatMessageContent({
           messageId: assistantMessageId,
           content: assistantContent,
@@ -610,6 +729,7 @@ async function runFollowupChat(input: {
             streaming: false,
             completed: true,
             thinking_mode: thinkingMode,
+            ...(firstProposal ? { calendar_proposal: firstProposal } : {}),
           },
         });
 

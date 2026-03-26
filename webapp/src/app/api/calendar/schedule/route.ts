@@ -40,8 +40,13 @@ export async function POST(req: Request) {
   }
 
   const assignmentId = toOptionalString(body?.assignment_id);
-  if (!assignmentId) {
-    return NextResponse.json({ error: "assignment_id is required" }, { status: 400 });
+  const sessionIdFromBody = toOptionalString(body?.session_id);
+
+  if (!assignmentId && !sessionIdFromBody) {
+    return NextResponse.json(
+      { error: "assignment_id is required" },
+      { status: 400 },
+    );
   }
 
   const timezone = toOptionalString(body?.timezone) ?? "UTC";
@@ -83,9 +88,13 @@ export async function POST(req: Request) {
   }
 
   try {
-    // Resolve assignment
+    // Resolve assignment — try by assignmentId first, fall back to sessionId
     const allAssignments = await listCalendarAssignmentsForUser(userId);
-    const assignment = allAssignments.find((a) => a.assignmentId === assignmentId);
+    const assignment =
+      (assignmentId ? allAssignments.find((a) => a.assignmentId === assignmentId) : undefined) ??
+      (sessionIdFromBody
+        ? allAssignments.find((a) => a.latestSessionId === sessionIdFromBody)
+        : undefined);
 
     if (!assignment) {
       return NextResponse.json(
@@ -207,8 +216,8 @@ export async function POST(req: Request) {
       }
     }
 
-    // Persist successful events as accepted agent work blocks
-    if (successfulInserts.length > 0) {
+    // Persist successful events as accepted agent work blocks (only when we have a valid assignmentId)
+    if (successfulInserts.length > 0 && assignment.assignmentId) {
       await insertAssignmentWorkBlocks(
         successfulInserts.map(({ session, eventId }) => ({
           userId,

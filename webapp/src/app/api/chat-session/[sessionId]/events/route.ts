@@ -217,6 +217,19 @@ export async function GET(
             },
             `${event.at}-error`,
           );
+          return;
+        }
+
+        if (event.type === "calendar.proposal") {
+          emit(
+            "calendar.proposal",
+            {
+              assistant_message_id: event.assistantMessageId,
+              assignment_id: event.assignmentId,
+              sessions: event.sessions,
+            },
+            `${event.at}-proposal`,
+          );
         }
       };
 

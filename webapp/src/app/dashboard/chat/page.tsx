@@ -8,6 +8,7 @@ import { Brain, LoaderCircle, SendHorizontal, Trash2 } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
+import { CalendarProposalCard } from "@/components/chat/calendar-proposal-card"
 import { ChatMessageBubble } from "@/components/chat/chat-message-bubble"
 import { GuideExportButton } from "@/components/chat/guide-export-button"
 import { MARKDOWN_COMPONENTS } from "@/components/chat/markdown-components"
@@ -37,6 +38,7 @@ type AssignmentPayload = {
   assignmentId?: string | number
   dueAtISO?: string
   pointsPossible?: number
+  userTimezone?: string
   rubric?: {
     criteria?: unknown[]
   }
@@ -297,6 +299,9 @@ function DashboardChatPageContent() {
   const [isSending, setIsSending] = useState(false)
   const [isThinkingModeEnabled, setIsThinkingModeEnabled] = useState(false)
   const [showProgressPanel, setShowProgressPanel] = useState(false)
+  const [calendarProposals, setCalendarProposals] = useState<
+    Map<string, { assignmentId: string; sessions: Array<{ start_iso: string; end_iso: string; focus: string; priority: "high" | "medium" | "low" }> }>
+  >(new Map())
   const [displayProgress, setDisplayProgress] = useState(0)
   const [stageToneIndex, setStageToneIndex] = useState(0)
   const [isContextDialogOpen, setIsContextDialogOpen] = useState(false)
@@ -591,12 +596,30 @@ function DashboardChatPageContent() {
       }
     }
 
+    const parseCalendarProposal = (event: MessageEvent<string>) => {
+      try {
+        const payload = JSON.parse(event.data) as {
+          assistant_message_id?: string
+          assignment_id?: string
+          sessions?: Array<{ start_iso: string; end_iso: string; focus: string; priority: "high" | "medium" | "low" }>
+        }
+        if (!payload.assistant_message_id || !Array.isArray(payload.sessions)) return
+        const msgId = payload.assistant_message_id
+        const assignmentId = payload.assignment_id ?? ""
+        const sessions = payload.sessions
+        setCalendarProposals((prev) => new Map(prev).set(msgId, { assignmentId, sessions }))
+      } catch {
+        // Ignore malformed proposal events
+      }
+    }
+
     eventSource.addEventListener("session.snapshot", parseSessionSnapshot as EventListener)
     eventSource.addEventListener("session.update", parseSessionUpdate as EventListener)
     eventSource.addEventListener("chat.message.created", parseChatMessageCreated as EventListener)
     eventSource.addEventListener("chat.message.delta", parseChatMessageDelta as EventListener)
     eventSource.addEventListener("chat.message.completed", parseChatMessageCompleted as EventListener)
     eventSource.addEventListener("chat.error", parseChatError as EventListener)
+    eventSource.addEventListener("calendar.proposal", parseCalendarProposal as EventListener)
 
     eventSource.onerror = () => {
       if (isDisposed) return
@@ -621,6 +644,22 @@ function DashboardChatPageContent() {
       eventSource.close()
     }
   }, [sessionId])
+
+  // Restore calendar proposals from persisted message metadata on page load / session change
+  useEffect(() => {
+    if (!session || session.session_id !== sessionId) return
+    const map = new Map<string, { assignmentId: string; sessions: Array<{ start_iso: string; end_iso: string; focus: string; priority: "high" | "medium" | "low" }> }>()
+    for (const msg of session.messages) {
+      if (msg.sender_role !== "assistant") continue
+      const cp = msg.metadata?.calendar_proposal as
+        | { assignmentId: string; sessions: Array<{ start_iso: string; end_iso: string; focus: string; priority: "high" | "medium" | "low" }> }
+        | undefined
+      if (!cp || msg.metadata?.calendar_proposal_scheduled === true) continue
+      map.set(msg.id, { assignmentId: cp.assignmentId, sessions: cp.sessions })
+    }
+    setCalendarProposals(map)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.session_id])
 
   const effectiveSession =
     sessionId && session?.session_id === sessionId ? session : null
@@ -1248,18 +1287,64 @@ function DashboardChatPageContent() {
                   </div>
                 ) : null}
 
-                {(effectiveSession?.messages ?? []).map((message) => (
-                  <ChatMessageBubble
-                    key={message.id}
-                    message={message}
-                    isLatestStreamingAssistant={
-                      message.sender_role === "assistant" &&
-                      message.id === latestAssistantMessageId &&
-                      isSending
-                    }
-                    reduceMotion={reduceMotion}
-                  />
-                ))}
+                {(effectiveSession?.messages ?? []).map((message) => {
+                  const proposal = message.sender_role === "assistant"
+                    ? calendarProposals.get(message.id)
+                    : undefined
+                  return (
+                    <div key={message.id}>
+                      <ChatMessageBubble
+                        message={message}
+                        isLatestStreamingAssistant={
+                          message.sender_role === "assistant" &&
+                          message.id === latestAssistantMessageId &&
+                          isSending
+                        }
+                        reduceMotion={reduceMotion}
+                      />
+                      {proposal && (
+                        <div className="mx-auto w-full max-w-4xl px-1">
+                          <CalendarProposalCard
+                            assignmentId={proposal.assignmentId}
+                            sessionId={sessionId}
+                            sessions={proposal.sessions}
+                            timezone={String(effectiveSession?.payload?.userTimezone ?? "UTC")}
+                            onScheduled={() => {
+                              setCalendarProposals((prev) => {
+                                const next = new Map(prev)
+                                next.delete(message.id)
+                                return next
+                              })
+                              void fetch(
+                                `/api/chat-session/${sessionId}/messages/${message.id}`,
+                                {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ calendar_proposal_scheduled: true }),
+                                },
+                              ).catch(() => {})
+                            }}
+                            onDismissed={() => {
+                              setCalendarProposals((prev) => {
+                                const next = new Map(prev)
+                                next.delete(message.id)
+                                return next
+                              })
+                              void fetch(
+                                `/api/chat-session/${sessionId}/messages/${message.id}`,
+                                {
+                                  method: "PATCH",
+                                  headers: { "Content-Type": "application/json" },
+                                  body: JSON.stringify({ calendar_proposal_scheduled: true }),
+                                },
+                              ).catch(() => {})
+                            }}
+                          />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
                 </div>
               </ScrollArea>
             </div>
