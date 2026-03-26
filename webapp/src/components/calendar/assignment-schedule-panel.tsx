@@ -193,7 +193,7 @@ export function AssignmentSchedulePanel({
       animate={{ x: 0, opacity: 1 }}
       exit={reduceMotion ? undefined : { x: "100%", opacity: 0 }}
       transition={{ duration: 0.28, ease: EASE_OUT }}
-      className="absolute inset-y-0 right-0 z-30 flex w-full flex-col overflow-hidden rounded-xl border border-border/70 bg-card/95 shadow-2xl backdrop-blur-sm sm:w-[380px]"
+      className="fixed inset-x-0 bottom-0 top-12 z-40 flex w-full flex-col overflow-hidden border border-border/70 bg-card/95 shadow-2xl backdrop-blur-sm sm:inset-x-auto sm:right-4 sm:top-14 sm:bottom-4 sm:w-[380px] sm:rounded-xl md:right-6 md:top-16 md:bottom-6"
     >
       {/* Header */}
       <div className="flex items-start justify-between gap-3 border-b border-border/60 px-4 py-3">
