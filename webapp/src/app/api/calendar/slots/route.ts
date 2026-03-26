@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
-import { listAssignmentWorkBlocksForRange, listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
+import { listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
 import {
   detectFreeSlots,
   recommendStudySessions,
@@ -97,19 +97,6 @@ export async function POST(req: Request) {
     const nowISO = now.toISOString();
     const dueAtISO = dueAt.toISOString();
 
-    // Fetch existing work-block busy time
-    const existingBlocks = await listAssignmentWorkBlocksForRange({
-      userId,
-      startISO: nowISO,
-      endISO: dueAtISO,
-      statuses: ["proposed", "accepted"],
-    });
-
-    const workBlockBusy: PlannerBusyInterval[] = existingBlocks.map((block) => ({
-      startISO: block.startAtISO,
-      endISO: block.endAtISO,
-    }));
-
     // Fetch Google Calendar busy intervals
     let googleBusy: PlannerBusyInterval[] = [];
     let googleStatus: "connected" | "disconnected" | "needs_attention" = "disconnected";
@@ -155,11 +142,9 @@ export async function POST(req: Request) {
       priority: assignment.priority,
     };
 
-    const busyIntervals: PlannerBusyInterval[] = [...googleBusy, ...workBlockBusy];
-
     const freeSlots = detectFreeSlots({
       assignment: plannerAssignment,
-      busyIntervals,
+      busyIntervals: googleBusy,
       nowISO,
     });
 

@@ -16,7 +16,6 @@ import {
   updateChatSessionStatus,
 } from "@/lib/chat-repository";
 import {
-  listAssignmentWorkBlocksForRange,
   listCalendarAssignmentsForUser,
 } from "@/lib/calendar-repository";
 import { detectFreeSlots, recommendStudySessions } from "@/lib/calendar-planner";
@@ -225,37 +224,26 @@ async function fetchCalendarContextForSession(
   const nowISO = now.toISOString();
   const dueAtISO = dueAt.toISOString();
 
-  const [workBlocks, googleBusy] = await Promise.all([
-    listAssignmentWorkBlocksForRange({
-      userId,
-      startISO: nowISO,
-      endISO: dueAtISO,
-      statuses: ["proposed", "accepted"],
-    }).catch(() => [] as Awaited<ReturnType<typeof listAssignmentWorkBlocksForRange>>),
-    (async () => {
-      try {
-        const requestUrl = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
-        const accessState = await ensureGoogleCalendarAccessToken({ userId, requestUrl });
-        if (!accessState.connected || !accessState.accessToken) return [];
-        const events = await listGoogleCalendarEvents({
-          accessToken: accessState.accessToken,
-          timeMinIso: nowISO,
-          timeMaxIso: dueAtISO,
-        });
-        return events
-          .filter((e) => e.status !== "cancelled" && e.start.dateTime)
-          .map((e) => ({ startISO: e.start.dateTime!, endISO: e.end.dateTime! }));
-      } catch (err) {
-        if (err instanceof GoogleCalendarApiError) return [];
-        return [];
-      }
-    })(),
-  ]);
+  const googleBusy = await (async () => {
+    try {
+      const requestUrl = process.env.NEXTAUTH_URL ?? "http://localhost:3000";
+      const accessState = await ensureGoogleCalendarAccessToken({ userId, requestUrl });
+      if (!accessState.connected || !accessState.accessToken) return [];
+      const events = await listGoogleCalendarEvents({
+        accessToken: accessState.accessToken,
+        timeMinIso: nowISO,
+        timeMaxIso: dueAtISO,
+      });
+      return events
+        .filter((e) => e.status !== "cancelled" && e.start.dateTime)
+        .map((e) => ({ startISO: e.start.dateTime!, endISO: e.end.dateTime! }));
+    } catch (err) {
+      if (err instanceof GoogleCalendarApiError) return [];
+      return [];
+    }
+  })();
 
-  const busyIntervals = [
-    ...workBlocks.map((b) => ({ startISO: b.startAtISO, endISO: b.endAtISO })),
-    ...googleBusy,
-  ];
+  const busyIntervals = [...googleBusy];
 
   const plannerAssignment = {
     assignmentId: assignmentRecordId,

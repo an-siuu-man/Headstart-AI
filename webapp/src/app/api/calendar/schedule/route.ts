@@ -1,15 +1,17 @@
 import { NextResponse } from "next/server";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
-import {
-  insertAssignmentWorkBlocks,
-  listCalendarAssignmentsForUser,
-} from "@/lib/calendar-repository";
+import { listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
 import {
   createGoogleCalendarEvent,
   GoogleCalendarApiError,
 } from "@/lib/google-calendar";
 import { ensureGoogleCalendarAccessToken } from "@/lib/google-calendar-session";
 import { upsertNeedsAttentionGoogleCalendarIntegration } from "@/lib/google-calendar-repository";
+import {
+  HEADSTART_ASSIGNMENT_ID_KEY,
+  HEADSTART_EVENT_TYPE_KEY,
+  HEADSTART_EVENT_TYPE_STUDY,
+} from "@/lib/calendar-google-markers";
 
 export const runtime = "nodejs";
 
@@ -147,6 +149,12 @@ export async function POST(req: Request) {
             startIso: session.start_iso,
             endIso: session.end_iso,
             timezone,
+            extendedPropertiesPrivate: {
+              [HEADSTART_EVENT_TYPE_KEY]: HEADSTART_EVENT_TYPE_STUDY,
+              ...(assignment.assignmentId
+                ? { [HEADSTART_ASSIGNMENT_ID_KEY]: assignment.assignmentId }
+                : {}),
+            },
           },
         });
       }),
@@ -163,12 +171,6 @@ export async function POST(req: Request) {
     };
 
     const scheduledEvents: ScheduledEventEntry[] = [];
-    const successfulInserts: Array<{
-      session: SessionInput;
-      eventId: string;
-      htmlLink: string | null;
-    }> = [];
-
     for (let i = 0; i < results.length; i++) {
       const result = results[i]!;
       const session = sessions[i]!;
@@ -180,11 +182,6 @@ export async function POST(req: Request) {
           google_event_id: result.value.id,
           html_link: result.value.htmlLink,
           status: "created",
-        });
-        successfulInserts.push({
-          session,
-          eventId: result.value.id,
-          htmlLink: result.value.htmlLink,
         });
       } else {
         const err = result.reason;
@@ -214,27 +211,6 @@ export async function POST(req: Request) {
           error: errorMessage,
         });
       }
-    }
-
-    // Persist successful events as accepted agent work blocks (only when we have a valid assignmentId)
-    if (successfulInserts.length > 0 && assignment.assignmentId) {
-      await insertAssignmentWorkBlocks(
-        successfulInserts.map(({ session, eventId }) => ({
-          userId,
-          assignmentId: assignment.assignmentId as string,
-          source: "agent" as const,
-          status: "accepted" as const,
-          title: `Study: ${assignment.title}`,
-          startAtISO: session.start_iso,
-          endAtISO: session.end_iso,
-          googleEventId: eventId,
-          metadata: {
-            focus: session.focus ?? null,
-            priority: session.priority ?? null,
-            timezone,
-          },
-        })),
-      );
     }
 
     const createdCount = scheduledEvents.filter((e) => e.status === "created").length;

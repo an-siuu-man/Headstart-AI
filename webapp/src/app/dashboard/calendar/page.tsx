@@ -26,7 +26,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { cn } from "@/lib/utils"
 
-type CalendarEventSource = "assignment_due" | "google_event" | "proposed_block"
+type CalendarEventSource = "assignment_due" | "google_event" | "study_time_block"
 type GoogleIntegrationStatus = "connected" | "disconnected" | "needs_attention"
 
 type CalendarApiEvent = {
@@ -55,6 +55,27 @@ type CalendarApiResponse = {
 type CalendarRange = {
   startISO: string
   endISO: string
+}
+
+type ProposalSuggestion = {
+  id: string
+  assignment_id: string
+  assignment_title: string
+  start_iso: string
+  end_iso: string
+  focus: string
+  priority: "high" | "medium" | "low"
+}
+
+type ProposalGenerateResponse = {
+  suggestions?: ProposalSuggestion[]
+  error?: string
+}
+
+type ScheduleApiResponse = {
+  created_count?: number
+  failed_count?: number
+  error?: string
 }
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -87,12 +108,16 @@ export default function DashboardCalendarPage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [isGenerating, setIsGenerating] = useState(false)
+  const [isSchedulingSuggestions, setIsSchedulingSuggestions] = useState(false)
   const [reloadNonce, setReloadNonce] = useState(0)
   const [googleStatus, setGoogleStatus] = useState<GoogleIntegrationStatus>("disconnected")
+  const [suggestionStatusText, setSuggestionStatusText] = useState<string | null>(null)
 
   const [showAssignmentDue, setShowAssignmentDue] = useState(true)
   const [showGoogleEvents, setShowGoogleEvents] = useState(true)
-  const [showProposedBlocks, setShowProposedBlocks] = useState(true)
+  const [showStudyBlocks, setShowStudyBlocks] = useState(true)
+  const [proposalSuggestions, setProposalSuggestions] = useState<ProposalSuggestion[]>([])
+  const [selectedSuggestionIds, setSelectedSuggestionIds] = useState<Set<string>>(new Set())
   const [panelAssignment, setPanelAssignment] = useState<{
     assignmentId: string
     title: string
@@ -154,17 +179,17 @@ export default function DashboardCalendarPage() {
     return events
       .filter((event) => {
         if (event.source === "assignment_due") return showAssignmentDue
-        if (event.source === "google_event") return showGoogleEvents
-        return showProposedBlocks
+        if (event.source === "study_time_block") return showStudyBlocks
+        return showGoogleEvents
       })
       .map((event) => toFullCalendarEvent(event, isDark))
-  }, [events, showAssignmentDue, showGoogleEvents, showProposedBlocks, isDark])
+  }, [events, isDark, showAssignmentDue, showGoogleEvents, showStudyBlocks])
 
   const sourceCounts = useMemo(
     () => ({
       assignmentDue: events.filter((e) => e.source === "assignment_due").length,
+      studyBlocks: events.filter((e) => e.source === "study_time_block").length,
       googleEvents: events.filter((e) => e.source === "google_event").length,
-      proposedBlocks: events.filter((e) => e.source === "proposed_block").length,
     }),
     [events],
   )
@@ -180,7 +205,6 @@ export default function DashboardCalendarPage() {
     (arg: EventClickArg) => {
       arg.jsEvent.preventDefault()
 
-      // Intercept assignment_due clicks → open the schedule panel instead of navigating
       const rawEvent = events.find((e) => e.id === arg.event.id)
       if (rawEvent?.source === "assignment_due" && rawEvent.assignment_id) {
         setPanelAssignment({
@@ -202,7 +226,7 @@ export default function DashboardCalendarPage() {
 
       router.push(target)
     },
-    [router, events],
+    [events, router],
   )
 
   const generateBlocks = useCallback(
@@ -211,6 +235,7 @@ export default function DashboardCalendarPage() {
 
       setIsGenerating(true)
       setLoadError(null)
+      setSuggestionStatusText(null)
 
       try {
         const response = await fetch("/api/calendar/proposals/generate", {
@@ -224,12 +249,19 @@ export default function DashboardCalendarPage() {
           }),
         })
 
+        const body = (await response.json()) as ProposalGenerateResponse
         if (!response.ok) {
-          const bodyText = await response.text()
-          throw new Error(bodyText || `Failed to generate proposals (${response.status})`)
+          throw new Error(body.error ?? `Failed to generate proposals (${response.status})`)
         }
 
-        setReloadNonce((v) => v + 1)
+        const suggestions = Array.isArray(body.suggestions) ? body.suggestions : []
+        setProposalSuggestions(suggestions)
+        setSelectedSuggestionIds(new Set(suggestions.map((item) => item.id)))
+        setSuggestionStatusText(
+          suggestions.length > 0
+            ? `${suggestions.length} proposal suggestion${suggestions.length === 1 ? "" : "s"} ready to schedule.`
+            : "No proposal suggestions found for this range.",
+        )
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         setLoadError(message)
@@ -240,6 +272,111 @@ export default function DashboardCalendarPage() {
     [range, timezone],
   )
 
+  const toggleSuggestion = useCallback((id: string) => {
+    setSelectedSuggestionIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
+      return next
+    })
+  }, [])
+
+  const scheduleSelectedSuggestions = useCallback(async () => {
+    if (isSchedulingSuggestions || selectedSuggestionIds.size === 0) return
+
+    const selectedSuggestions = proposalSuggestions.filter((item) =>
+      selectedSuggestionIds.has(item.id),
+    )
+    if (selectedSuggestions.length === 0) return
+
+    setIsSchedulingSuggestions(true)
+    setLoadError(null)
+    setSuggestionStatusText(null)
+
+    try {
+      const groupedByAssignment = new Map<string, ProposalSuggestion[]>()
+      for (const suggestion of selectedSuggestions) {
+        const list = groupedByAssignment.get(suggestion.assignment_id) ?? []
+        list.push(suggestion)
+        groupedByAssignment.set(suggestion.assignment_id, list)
+      }
+
+      const requests = Array.from(groupedByAssignment.entries()).map(
+        async ([assignmentId, suggestions]) => {
+          const response = await fetch("/api/calendar/schedule", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              assignment_id: assignmentId,
+              timezone,
+              sessions: suggestions.map((suggestion) => ({
+                start_iso: suggestion.start_iso,
+                end_iso: suggestion.end_iso,
+                focus: suggestion.focus,
+                priority: suggestion.priority,
+              })),
+            }),
+          })
+
+          const payload = (await response.json()) as ScheduleApiResponse
+          if (!response.ok) {
+            throw new Error(payload.error ?? `Schedule failed (${response.status})`)
+          }
+
+          return {
+            suggestionIds: suggestions.map((item) => item.id),
+            createdCount: payload.created_count ?? 0,
+            failedCount: payload.failed_count ?? 0,
+          }
+        },
+      )
+
+      const settled = await Promise.allSettled(requests)
+      const scheduledIds = new Set<string>()
+      let createdCount = 0
+      let failedCount = 0
+      const errors: string[] = []
+
+      for (const item of settled) {
+        if (item.status === "fulfilled") {
+          item.value.suggestionIds.forEach((id) => scheduledIds.add(id))
+          createdCount += item.value.createdCount
+          failedCount += item.value.failedCount
+        } else {
+          errors.push(item.reason instanceof Error ? item.reason.message : String(item.reason))
+        }
+      }
+
+      if (scheduledIds.size > 0) {
+        setProposalSuggestions((prev) => prev.filter((item) => !scheduledIds.has(item.id)))
+        setSelectedSuggestionIds((prev) => {
+          const next = new Set(prev)
+          scheduledIds.forEach((id) => next.delete(id))
+          return next
+        })
+        setReloadNonce((value) => value + 1)
+        setSuggestionStatusText(
+          `${createdCount} session${createdCount === 1 ? "" : "s"} added to Google Calendar${
+            failedCount > 0 ? ` (${failedCount} failed)` : ""
+          }.`,
+        )
+      }
+
+      if (errors.length > 0) {
+        setLoadError(
+          errors.length === 1
+            ? errors[0]!
+            : `${errors.length} scheduling requests failed. First error: ${errors[0]}`,
+        )
+      }
+    } finally {
+      setIsSchedulingSuggestions(false)
+    }
+  }, [isSchedulingSuggestions, proposalSuggestions, selectedSuggestionIds, timezone])
+
   return (
     <motion.div
       className="flex h-full flex-col space-y-6"
@@ -247,7 +384,6 @@ export default function DashboardCalendarPage() {
       initial={reduceMotion ? false : "hidden"}
       animate={reduceMotion ? undefined : "show"}
     >
-      {/* Header */}
       <motion.div
         variants={reduceMotion ? undefined : pageSection}
         className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"
@@ -255,7 +391,7 @@ export default function DashboardCalendarPage() {
         <div>
           <h2 className="text-3xl font-heading font-bold tracking-tight">Calendar Planner</h2>
           <p className="text-muted-foreground">
-            Monthly view of assignment deadlines, Google events, and proposed work blocks.
+            Monthly view of assignment deadlines and Google Calendar events.
           </p>
         </div>
 
@@ -280,7 +416,6 @@ export default function DashboardCalendarPage() {
         </div>
       </motion.div>
 
-      {/* Error banner */}
       <AnimatePresence>
         {loadError && (
           <motion.div
@@ -298,7 +433,107 @@ export default function DashboardCalendarPage() {
         )}
       </AnimatePresence>
 
-      {/* Calendar card */}
+      <AnimatePresence>
+        {(proposalSuggestions.length > 0 || suggestionStatusText) && (
+          <motion.div
+            key="proposal-suggestions"
+            variants={reduceMotion ? undefined : pageSection}
+            initial={reduceMotion ? false : { opacity: 0, y: 8 }}
+            animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
+            exit={reduceMotion ? undefined : { opacity: 0, y: -8 }}
+            transition={{ duration: 0.2, ease: EASE_OUT }}
+          >
+            <Card className="border-border/60 bg-card/90">
+              <CardHeader>
+                <CardTitle>Proposal Suggestions</CardTitle>
+                <CardDescription>
+                  Suggestions are temporary until you schedule them to Google Calendar.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {suggestionStatusText ? (
+                  <p className="text-sm text-muted-foreground">{suggestionStatusText}</p>
+                ) : null}
+
+                {proposalSuggestions.length > 0 ? (
+                  <>
+                    <div className="max-h-64 space-y-2 overflow-y-auto pr-1">
+                      {proposalSuggestions.map((suggestion) => (
+                        <label
+                          key={suggestion.id}
+                          className={cn(
+                            "flex cursor-pointer items-start gap-3 rounded-md border px-3 py-2.5 transition-colors",
+                            selectedSuggestionIds.has(suggestion.id)
+                              ? "border-primary/40 bg-primary/5"
+                              : "border-border/40 bg-muted/30 opacity-70",
+                          )}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedSuggestionIds.has(suggestion.id)}
+                            onChange={() => toggleSuggestion(suggestion.id)}
+                            className="mt-0.5 h-3.5 w-3.5 shrink-0 accent-primary"
+                          />
+                          <div className="min-w-0 flex-1">
+                            <p className="text-xs font-medium leading-snug text-foreground">
+                              {suggestion.assignment_title}
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              {formatSuggestionWindow(suggestion.start_iso, suggestion.end_iso)}
+                            </p>
+                            <p className="mt-0.5 text-xs text-muted-foreground">
+                              {suggestion.focus}
+                            </p>
+                          </div>
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              "shrink-0 text-[10px]",
+                              suggestionPriorityTone(suggestion.priority),
+                            )}
+                          >
+                            {suggestion.priority}
+                          </Badge>
+                        </label>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <Button
+                        size="sm"
+                        disabled={selectedSuggestionIds.size === 0 || isSchedulingSuggestions}
+                        onClick={() => void scheduleSelectedSuggestions()}
+                      >
+                        {isSchedulingSuggestions ? (
+                          <>
+                            <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" />
+                            Scheduling...
+                          </>
+                        ) : (
+                          `Schedule Selected (${selectedSuggestionIds.size})`
+                        )}
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={isSchedulingSuggestions}
+                        onClick={() => {
+                          setProposalSuggestions([])
+                          setSelectedSuggestionIds(new Set())
+                          setSuggestionStatusText(null)
+                        }}
+                      >
+                        Clear Suggestions
+                      </Button>
+                    </div>
+                  </>
+                ) : null}
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <motion.div variants={reduceMotion ? undefined : pageSection} className="relative flex-1">
         <AnimatePresence>
           {panelAssignment && (
@@ -318,8 +553,8 @@ export default function DashboardCalendarPage() {
           <CardHeader>
             <CardTitle>Monthly Calendar</CardTitle>
             <CardDescription>
-              Toggle each source to focus on assignments, Google events, or your generated work
-              plan.
+              Toggle each source to focus on assignment deadlines, study blocks, or other Google
+              Calendar events.
             </CardDescription>
             <div className="flex flex-wrap items-center gap-2 pt-1">
               <SourceToggle
@@ -331,20 +566,20 @@ export default function DashboardCalendarPage() {
                 icon={CalendarX}
               />
               <SourceToggle
+                label="Study Time Blocks"
+                count={sourceCounts.studyBlocks}
+                active={showStudyBlocks}
+                onToggle={() => setShowStudyBlocks((v) => !v)}
+                dotClass="bg-blue-500"
+                icon={CalendarDays}
+              />
+              <SourceToggle
                 label="Google Events"
                 count={sourceCounts.googleEvents}
                 active={showGoogleEvents}
                 onToggle={() => setShowGoogleEvents((v) => !v)}
                 dotClass="bg-teal-500"
                 icon={CalendarCheck}
-              />
-              <SourceToggle
-                label="Proposed Blocks"
-                count={sourceCounts.proposedBlocks}
-                active={showProposedBlocks}
-                onToggle={() => setShowProposedBlocks((v) => !v)}
-                dotClass="bg-blue-500"
-                icon={CalendarDays}
               />
             </div>
           </CardHeader>
@@ -365,7 +600,6 @@ export default function DashboardCalendarPage() {
                 datesSet={onDatesSet}
               />
 
-              {/* Loading overlay */}
               <AnimatePresence>
                 {isLoading && (
                   <motion.div
@@ -377,7 +611,7 @@ export default function DashboardCalendarPage() {
                     className="pointer-events-none absolute inset-x-3 bottom-3 flex items-center gap-2 text-sm text-muted-foreground"
                   >
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    Loading calendar…
+                    Loading calendar...
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -477,15 +711,15 @@ function eventTone(event: CalendarApiEvent, isDark: boolean) {
       : { background: "#fee2e2", border: "#dc2626", text: "#991b1b" }
   }
 
-  if (event.source === "google_event") {
+  if (event.source === "study_time_block") {
     return isDark
-      ? { background: "rgba(19, 78, 74, 0.32)", border: "#2dd4bf", text: "#99f6e4" }
-      : { background: "#ccfbf1", border: "#0f766e", text: "#134e4a" }
+      ? { background: "rgba(30, 58, 138, 0.32)", border: "#60a5fa", text: "#bfdbfe" }
+      : { background: "#dbeafe", border: "#2563eb", text: "#1e3a8a" }
   }
 
   return isDark
-    ? { background: "rgba(30, 58, 138, 0.32)", border: "#60a5fa", text: "#bfdbfe" }
-    : { background: "#dbeafe", border: "#2563eb", text: "#1e3a8a" }
+    ? { background: "rgba(19, 78, 74, 0.32)", border: "#2dd4bf", text: "#99f6e4" }
+    : { background: "#ccfbf1", border: "#0f766e", text: "#134e4a" }
 }
 
 function googleStatusTone(status: GoogleIntegrationStatus) {
@@ -502,4 +736,24 @@ function googleStatusLabel(status: GoogleIntegrationStatus) {
   if (status === "connected") return "Connected"
   if (status === "needs_attention") return "Needs Attention"
   return "Not Connected"
+}
+
+function suggestionPriorityTone(priority: ProposalSuggestion["priority"]) {
+  if (priority === "high") {
+    return "border-red-400/60 bg-red-500/10 text-red-700 dark:text-red-300"
+  }
+  if (priority === "medium") {
+    return "border-amber-400/60 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+  }
+  return "border-blue-400/60 bg-blue-500/10 text-blue-700 dark:text-blue-300"
+}
+
+function formatSuggestionWindow(startIso: string, endIso: string) {
+  try {
+    const start = new Date(startIso)
+    const end = new Date(endIso)
+    return `${start.toLocaleString()} - ${end.toLocaleTimeString()}`
+  } catch {
+    return `${startIso} - ${endIso}`
+  }
 }

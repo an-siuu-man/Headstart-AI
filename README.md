@@ -49,9 +49,9 @@ Architecture contracts and flow references live in:
 - Supports session snapshot/poll fallback (`GET /api/chat-session/[sessionId]`).
 - Ingest endpoint for assignment handoff (`POST /api/ingest-assignment`).
 - Google Calendar integration connect/disconnect + event creation endpoints.
-- Monthly calendar planner page (`/dashboard/calendar`) with toggles for assignment due events, Google events, and proposed work blocks.
+- Monthly calendar planner page (`/dashboard/calendar`) with toggles for assignment due events, Google events, and Google-backed study time blocks.
 - Calendar aggregation endpoint (`GET /api/calendar/month`) for month-range event hydration.
-- Heuristic proposal generator (`POST /api/calendar/proposals/generate`) for assignment work blocks.
+- Heuristic proposal generator (`POST /api/calendar/proposals/generate`) for ephemeral scheduling suggestions.
 - Legacy proxy endpoint for direct run forwarding (`POST /api/run-agent`).
 
 ### Agent Service (AI Orchestration)
@@ -80,10 +80,10 @@ Calendar planning flow (new):
 
 1. User opens `/dashboard/calendar` month view.
 2. Frontend calls `GET /api/calendar/month` with month range + timezone.
-3. Backend returns a unified event list from assignment due dates, Google Calendar events, and persisted work blocks.
+3. Backend returns a unified event list from assignment due dates, Google study time blocks, and other Google Calendar events.
 4. User clicks `Generate Proposals` or `Regenerate`.
 5. Frontend calls `POST /api/calendar/proposals/generate`.
-6. Backend computes heuristic blocks, avoids busy intervals, persists rows, and returns generated blocks.
+6. Backend computes heuristic suggestions, avoids busy intervals, and returns transient suggestions for optional scheduling.
 
 ### Component Responsibility Boundaries
 
@@ -263,14 +263,9 @@ python -m pytest
 
 ## Database Migrations
 
-Calendar proposal persistence uses `public.assignment_work_blocks`.
-
-- Migration script: `webapp/supabase/migrations/20260325_calendar_work_blocks.sql`
-- Includes constraints for:
-  - `source in ('heuristic', 'agent')`
-  - `status in ('proposed', 'accepted', 'dismissed')`
-  - `end_at > start_at`
-- Includes indexes for user/range, user/assignment, and user/status/range queries.
+- Local planner persistence table `public.assignment_work_blocks` has been removed.
+- Historical create migration: `webapp/supabase/migrations/20260325_calendar_work_blocks.sql`
+- Removal migration: `webapp/supabase/migrations/20260326_drop_assignment_work_blocks.sql`
 
 ## Current State and Direction
 
@@ -279,7 +274,7 @@ Calendar proposal persistence uses `public.assignment_work_blocks`.
 - Working local 3-app pipeline from Canvas extraction to streamed guide generation in dashboard chat.
 - Extension-to-dashboard handoff is implemented and functional.
 - Agent service supports both sync and stream workflows with typed stage events.
-- Dashboard includes live chat, Google Calendar integration, and a monthly planner view with proposed assignment work blocks.
+- Dashboard includes live chat, Google Calendar integration, and a monthly planner view with Google-backed study time blocks.
 
 ### Direction
 
@@ -287,3 +282,5 @@ Calendar proposal persistence uses `public.assignment_work_blocks`.
 - Add authentication/authorization and production-grade security constraints.
 - Stabilize and version contracts across all components.
 - Expand automated contract/integration/e2e coverage across extension, web app, and agent service.
+
+

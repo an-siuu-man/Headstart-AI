@@ -1,11 +1,6 @@
 import { NextResponse } from "next/server";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
-import {
-  deleteHeuristicProposedBlocksForRange,
-  insertAssignmentWorkBlocks,
-  listAssignmentWorkBlocksForRange,
-  listCalendarAssignmentsForUser,
-} from "@/lib/calendar-repository";
+import { listCalendarAssignmentsForUser } from "@/lib/calendar-repository";
 import {
   GoogleCalendarApiError,
   listGoogleCalendarEvents,
@@ -20,6 +15,16 @@ import {
 } from "@/lib/calendar-planner";
 
 export const runtime = "nodejs";
+
+type ProposalSuggestion = {
+  id: string;
+  assignment_id: string;
+  assignment_title: string;
+  start_iso: string;
+  end_iso: string;
+  focus: string;
+  priority: "high" | "medium" | "low";
+};
 
 export async function POST(req: Request) {
   const resolvedUser = await resolveRequestUser(req);
@@ -64,15 +69,8 @@ export async function POST(req: Request) {
   const normalizedEndISO = endAt.toISOString();
 
   try {
-    const [assignments, existingBlocks] = await Promise.all([
-      listCalendarAssignmentsForUser(userId),
-      listAssignmentWorkBlocksForRange({
-        userId,
-        startISO: normalizedStartISO,
-        endISO: normalizedEndISO,
-        statuses: ["proposed", "accepted"],
-      }),
-    ]);
+    const assignments = await listCalendarAssignmentsForUser(userId);
+    const assignmentTitleById = new Map<string, string>();
 
     const plannerAssignments: PlannerAssignmentInput[] = assignments
       .filter((assignment) => {
@@ -83,12 +81,15 @@ export async function POST(req: Request) {
         if (!dueAt) return false;
         return isPointInRange(dueAt, startAt, endAt);
       })
-      .map((assignment) => ({
-        assignmentId: assignment.assignmentId as string,
-        title: assignment.title,
-        dueAtISO: assignment.dueAtISO as string,
-        priority: assignment.priority,
-      }));
+      .map((assignment) => {
+        assignmentTitleById.set(assignment.assignmentId as string, assignment.title);
+        return {
+          assignmentId: assignment.assignmentId as string,
+          title: assignment.title,
+          dueAtISO: assignment.dueAtISO as string,
+          priority: assignment.priority,
+        };
+      });
 
     let googleBusy: PlannerBusyInterval[] = [];
     let googleStatus: "connected" | "disconnected" | "needs_attention" = "disconnected";
@@ -127,69 +128,40 @@ export async function POST(req: Request) {
       }
     }
 
-    if (replaceExisting) {
-      await deleteHeuristicProposedBlocksForRange({
-        userId,
-        startISO: normalizedStartISO,
-        endISO: normalizedEndISO,
-      });
-    }
-
-    const retainedExistingBusy = existingBlocks
-      .filter((block) => {
-        if (replaceExisting && block.source === "heuristic" && block.status === "proposed") {
-          return false;
-        }
-        return true;
-      })
-      .map((block) => ({
-        startISO: block.startAtISO,
-        endISO: block.endAtISO,
-      }));
-
     const generatedDrafts = generateHeuristicWorkBlocks({
       assignments: plannerAssignments,
-      busyIntervals: [...googleBusy, ...retainedExistingBusy],
+      busyIntervals: googleBusy,
       rangeStartISO: normalizedStartISO,
       rangeEndISO: normalizedEndISO,
     });
 
-    const inserted = await insertAssignmentWorkBlocks(
-      generatedDrafts.map((draft) => ({
-        userId,
-        assignmentId: draft.assignmentId,
-        source: "heuristic",
-        status: "proposed",
-        title: draft.title,
-        startAtISO: draft.startAtISO,
-        endAtISO: draft.endAtISO,
-        metadata: {
-          ...draft.metadata,
-          timezone,
-        },
-      })),
-    );
+    const suggestions: ProposalSuggestion[] = generatedDrafts.map((draft) => {
+      const assignmentTitle = assignmentTitleById.get(draft.assignmentId) ?? draft.title;
+      const priority = toSessionPriority(draft.metadata.priority);
+      return {
+        id: `${draft.assignmentId}:${draft.startAtISO}`,
+        assignment_id: draft.assignmentId,
+        assignment_title: assignmentTitle,
+        start_iso: draft.startAtISO,
+        end_iso: draft.endAtISO,
+        focus: `Planned study block for ${assignmentTitle}`,
+        priority,
+      };
+    });
 
     const response = NextResponse.json({
       ok: true,
-      generated_count: inserted.length,
+      generated_count: suggestions.length,
+      // Kept for API compatibility; proposal suggestions are ephemeral only.
+      requested_replace_existing: replaceExisting,
+      replace_existing_ignored: true,
       integration: {
         google: {
           status: googleStatus,
           connected: googleStatus === "connected",
         },
       },
-      blocks: inserted.map((block) => ({
-        id: block.id,
-        source: "proposed_block",
-        title: block.title,
-        start_iso: block.startAtISO,
-        end_iso: block.endAtISO,
-        all_day: false,
-        assignment_id: block.assignmentId,
-        google_event_id: block.googleEventId,
-        status: block.status,
-      })),
+      suggestions,
     });
 
     if (resolvedUser?.refreshedSession) {
@@ -200,10 +172,16 @@ export async function POST(req: Request) {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return NextResponse.json(
-      { error: "Failed to generate work blocks", detail: message },
+      { error: "Failed to generate work block suggestions", detail: message },
       { status: 500 },
     );
   }
+}
+
+function toSessionPriority(value: unknown): ProposalSuggestion["priority"] {
+  if (value === "High") return "high";
+  if (value === "Medium") return "medium";
+  return "low";
 }
 
 function normalizeGoogleBusyWindow(event: GoogleCalendarListedEvent): PlannerBusyInterval | null {
@@ -260,6 +238,3 @@ function isValidTimezone(value: string) {
     return false;
   }
 }
-
-
-

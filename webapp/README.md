@@ -15,19 +15,19 @@ Next.js App Router dashboard and backend-for-frontend API for Headstart AI.
 
 ## Calendar Planner (Latest)
 
-The new calendar planner page is a monthly calendar view that combines:
+The calendar planner page is a monthly calendar view that combines:
 
 - Assignment due events from persisted chat session context and assignment submission status.
 - Integrated Google Calendar events for the selected month range.
-- Proposed assignment work blocks generated heuristically and persisted in Supabase.
+- Distinct Google-backed study events (`study_time_block`) vs other Google events (`google_event`).
 
 UI location: `src/app/dashboard/calendar/page.tsx`
 
 ### Planner Controls
 
-- Source toggles for `Assignment Due`, `Google Events`, and `Proposed Blocks`.
-- `Generate Proposals`: generates additional blocks without replacing existing heuristic proposed blocks.
-- `Regenerate`: replaces existing heuristic proposed blocks within the selected range, then generates fresh blocks.
+- Source toggles for `Assignment Due`, `Study Time Blocks`, and `Google Events`.
+- `Generate Proposals`: generates ephemeral scheduling suggestions (not persisted).
+- `Regenerate`: recomputes fresh ephemeral suggestions for the current range.
 
 ### Heuristic Scheduling Rules
 
@@ -40,7 +40,6 @@ Implemented in `src/lib/calendar-planner.ts`.
   - `Low`: 1 block, 60 minutes, target offset 24h before due date.
 - Collision handling:
   - Avoids overlap with Google busy events.
-  - Avoids overlap with retained existing work blocks.
   - Shifts candidate windows backward in 30-minute increments.
 
 ## API Endpoints
@@ -65,21 +64,16 @@ Implemented in `src/lib/calendar-planner.ts`.
 
 - `GET /api/calendar/month`
   - Query: `start_iso`, `end_iso`, `timezone`
-  - Output: unified event list with `assignment_due`, `google_event`, `proposed_block`
+  - Output: unified event list with `assignment_due`, `study_time_block`, `google_event`
 - `POST /api/calendar/proposals/generate`
   - Body: `start_iso`, `end_iso`, `timezone`, `replace_existing`
-  - Output: generated persisted proposed blocks for the range
+  - Output: transient proposal suggestions for optional scheduling
 
 ## Data Model and Migration
 
-Planner persistence table: `public.assignment_work_blocks`
-
-- Migration script: `supabase/migrations/20260325_calendar_work_blocks.sql`
-- Columns include: `user_id`, `assignment_id`, `source`, `status`, `title`, `start_at`, `end_at`, `google_event_id`, `metadata`
-- Constraints:
-  - `source in ('heuristic', 'agent')`
-  - `status in ('proposed', 'accepted', 'dismissed')`
-  - `end_at > start_at`
+- Local planner table `public.assignment_work_blocks` was removed.
+- Historical create migration: `supabase/migrations/20260325_calendar_work_blocks.sql`
+- Removal migration: `supabase/migrations/20260326_drop_assignment_work_blocks.sql`
 
 ## Styling the Calendar
 
