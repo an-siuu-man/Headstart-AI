@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 @import "shadcn/tailwind.css";
+@import "katex/dist/katex.min.css";
 
 @custom-variant dark (&:is(.dark *));
 
@@ -534,4 +535,26 @@
 .dark .fc .fc-popover-title,
 .dark .fc .fc-popover-close {
   color: oklch(0.93 0 0);
+}
+
+/* KaTeX math typography
+ * Ensures Computer Modern fonts (KaTeX's own bundled fonts, similar to Overleaf)
+ * are not overridden by the app's Lexend font on the parent container.
+ * Display math gets Overleaf-style centering and vertical breathing room.
+ */
+.katex {
+  font-family: KaTeX_Main, "Computer Modern", "Latin Modern Math", serif;
+  font-style: normal;
+  font-variant: normal;
+}
+
+.katex-display {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0.15em 0;
+}
+
+/* Slightly larger display equations, matching Overleaf's block math sizing */
+.katex-display > .katex {
+  font-size: 1.15em;
 }
