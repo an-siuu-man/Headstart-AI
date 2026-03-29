@@ -123,6 +123,7 @@ class TestRunAgentService(unittest.TestCase):
             user_message="What should I do first?",
             include_thinking=False,
             calendar_context=None,
+            user_attachments_context="",
         )
 
     def test_chat_stream_request_defaults_thinking_mode_false(self):
@@ -166,6 +167,7 @@ class TestRunAgentService(unittest.TestCase):
             user_message="Use thinking mode",
             include_thinking=True,
             calendar_context=None,
+            user_attachments_context="",
         )
 
     def test_stream_chat_workflow_passes_calendar_context_payload(self):
@@ -254,6 +256,7 @@ class TestRunAgentService(unittest.TestCase):
                     }
                 ],
             },
+            user_attachments_context="",
         )
 
     def test_chat_stream_request_accepts_review_window_reasons(self):

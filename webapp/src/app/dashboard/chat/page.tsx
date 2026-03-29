@@ -1,10 +1,10 @@
 "use client"
 
-import { type FormEvent, type KeyboardEvent as ReactKeyboardEvent, Suspense, useEffect, useMemo, useRef, useState } from "react"
+import { type ChangeEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
-import { Brain, LoaderCircle, SendHorizontal, Trash2 } from "lucide-react"
+import { Brain, LoaderCircle, Paperclip, SendHorizontal, Trash2, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -305,8 +305,11 @@ function DashboardChatPageContent() {
   const [displayProgress, setDisplayProgress] = useState(0)
   const [stageToneIndex, setStageToneIndex] = useState(0)
   const [isContextDialogOpen, setIsContextDialogOpen] = useState(false)
+  const [pendingFiles, setPendingFiles] = useState<File[]>([])
+  const [fileError, setFileError] = useState<string | null>(null)
   const threadContainerRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
   const latestSessionRef = useRef<ChatSessionResponse | null>(null)
   const latestAssistantMessageIdRef = useRef<string | null>(null)
   const previousGuideLengthRef = useRef(0)
@@ -671,6 +674,25 @@ function DashboardChatPageContent() {
       return name || `attachment-${index + 1}.pdf`
     })
     .filter((name) => name.length > 0)
+  const userAttachedFileNames = useMemo(() => {
+    const seen = new Set<string>()
+    const names: string[] = []
+    for (const message of effectiveSession?.messages ?? []) {
+      if (message.sender_role !== "user") continue
+      const raw = message.metadata?.attachments
+      if (!Array.isArray(raw)) continue
+      for (const a of raw) {
+        if (typeof a === "object" && a !== null && typeof (a as Record<string, unknown>).filename === "string") {
+          const name = (a as { filename: string }).filename
+          if (!seen.has(name)) {
+            seen.add(name)
+            names.push(name)
+          }
+        }
+      }
+    }
+    return names
+  }, [effectiveSession?.messages])
   const createdAtText = formatDateTime(effectiveSession?.created_at)
   const groupedSessionList = useMemo(() => {
     const grouped = new Map<string, ChatSessionAssignmentGroup>()
@@ -1076,7 +1098,7 @@ function DashboardChatPageContent() {
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = draft.trim()
-    if (!text) return
+    if (!text && pendingFiles.length === 0) return
     if (!effectiveSession) return
     if (effectiveSession.status !== "completed" && effectiveSession.stage !== "chat_streaming") {
       setErrorText("Guide generation is still in progress.")
@@ -1085,8 +1107,27 @@ function DashboardChatPageContent() {
 
     setIsSending(true)
     setErrorText(null)
+    setFileError(null)
 
     try {
+      // Upload any pending file attachments first
+      type UploadedAttachment = { filename: string; file_sha256: string; storage_path: string }
+      const uploadedAttachments: UploadedAttachment[] = []
+      for (const file of pendingFiles) {
+        const formData = new FormData()
+        formData.append("file", file)
+        const uploadResponse = await fetch(
+          `/api/chat-session/${encodeURIComponent(effectiveSession.session_id)}/attachments`,
+          { method: "POST", body: formData },
+        )
+        if (!uploadResponse.ok) {
+          const err = await uploadResponse.text()
+          throw new Error(`Failed to upload ${file.name}: ${err}`)
+        }
+        const uploaded = await uploadResponse.json() as UploadedAttachment
+        uploadedAttachments.push(uploaded)
+      }
+
       const response = await fetch(
         `/api/chat-session/${encodeURIComponent(effectiveSession.session_id)}/messages`,
         {
@@ -1097,6 +1138,7 @@ function DashboardChatPageContent() {
           body: JSON.stringify({
             content: text,
             thinking_mode: isThinkingModeEnabled ? "thinking" : "normal",
+            ...(uploadedAttachments.length > 0 ? { attachments: uploadedAttachments } : {}),
           }),
         },
       )
@@ -1113,13 +1155,14 @@ function DashboardChatPageContent() {
           item.session_id === effectiveSession.session_id
             ? {
                 ...item,
-                last_user_message: text,
+                last_user_message: text || `[${uploadedAttachments.length} file(s) attached]`,
                 updated_at: Date.now(),
               }
             : item,
         ),
       )
       setDraft("")
+      setPendingFiles([])
       if (textareaRef.current) textareaRef.current.style.height = "auto"
       requestAnimationFrame(() => {
         scrollThreadToBottom("smooth")
@@ -1129,6 +1172,39 @@ function DashboardChatPageContent() {
       setErrorText(message)
       setIsSending(false)
     }
+  }
+
+  function handleFileSelect(event: ChangeEvent<HTMLInputElement>) {
+    setFileError(null)
+    const selected = Array.from(event.target.files ?? [])
+    if (selected.length === 0) return
+
+    const combined = [...pendingFiles, ...selected]
+    if (combined.length > 3) {
+      setFileError("Maximum 3 files per message.")
+      event.target.value = ""
+      return
+    }
+
+    for (const file of selected) {
+      if (file.size > 10 * 1024 * 1024) {
+        setFileError(`${file.name} exceeds the 10 MB limit.`)
+        event.target.value = ""
+        return
+      }
+      if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+        setFileError(`${file.name} is not a PDF.`)
+        event.target.value = ""
+        return
+      }
+    }
+
+    setPendingFiles(combined)
+    event.target.value = ""
+  }
+
+  function removeFile(index: number) {
+    setPendingFiles((previous) => previous.filter((_, i) => i !== index))
   }
 
   function handleDraftKeyDown(event: ReactKeyboardEvent<HTMLTextAreaElement>) {
@@ -1144,7 +1220,7 @@ function DashboardChatPageContent() {
     if (event.key !== "Enter") return
     if (event.shiftKey) return
     if (event.nativeEvent.isComposing) return
-    if (!draft.trim()) return
+    if (!draft.trim() && pendingFiles.length === 0) return
     if (!canSendMessage || isSending) return
 
     event.preventDefault()
@@ -1371,45 +1447,94 @@ function DashboardChatPageContent() {
                   ) : null}
                   <form
                     onSubmit={handleSend}
-                    className="flex w-full items-end gap-2 rounded-2xl bg-background/92 px-2 py-2 shadow-[0_14px_32px_-20px_rgba(15,23,42,0.55)] backdrop-blur supports-[backdrop-filter]:bg-background/80 dark:border dark:border-zinc-700/70"
+                    className="w-full rounded-2xl bg-background/92 shadow-[0_14px_32px_-20px_rgba(15,23,42,0.55)] backdrop-blur supports-[backdrop-filter]:bg-background/80 dark:border dark:border-zinc-700/70"
                   >
-                    <Button
-                      type="button"
-                      variant={isThinkingModeEnabled ? "secondary" : "ghost"}
-                      aria-pressed={isThinkingModeEnabled}
-                      disabled={isSending}
-                      onClick={() => setIsThinkingModeEnabled((previous) => !previous)}
-                      className="h-9 shrink-0 rounded-full px-3 text-xs font-medium"
-                    >
-                      <Brain className="mr-1.5 h-3.5 w-3.5" />
-                      {isThinkingModeEnabled ? "Thinking On" : "Thinking Off"}
-                    </Button>
-                    <textarea
-                      ref={textareaRef}
-                      rows={1}
-                      value={draft}
-                      onChange={(event) => {
-                        setDraft(event.target.value)
-                        const el = event.target
-                        el.style.height = "auto"
-                        el.style.height = `${el.scrollHeight}px`
-                      }}
-                      onKeyDown={handleDraftKeyDown}
-                      placeholder="Ask a follow-up question..."
-                      className="min-h-10 max-h-40 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground"
-                    />
-                    <Button
-                      type="submit"
-                      variant="ghost"
-                      disabled={draft.trim().length === 0 || !canSendMessage}
-                      className="h-9 w-9 rounded-full p-0 text-black transition-colors duration-200 hover:bg-foreground/10 hover:text-black disabled:text-black/40 dark:text-white dark:hover:text-white dark:disabled:text-white/40"
-                    >
-                      {isSending ? (
-                        <LoaderCircle className="h-4 w-4 animate-spin" />
-                      ) : (
-                        <SendHorizontal className="h-4 w-4" />
-                      )}
-                    </Button>
+                    {pendingFiles.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+                        {pendingFiles.map((file, index) => (
+                          <Badge
+                            key={`${file.name}-${index}`}
+                            variant="secondary"
+                            className="flex items-center gap-1 pr-1 text-xs"
+                          >
+                            <span className="max-w-[140px] truncate">{file.name}</span>
+                            <span className="text-muted-foreground">
+                              ({(file.size / 1024).toFixed(0)} KB)
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeFile(index)}
+                              className="ml-0.5 rounded-full p-0.5 hover:bg-foreground/10"
+                              aria-label={`Remove ${file.name}`}
+                            >
+                              <X className="h-3 w-3" />
+                            </button>
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                    {fileError && (
+                      <p className="px-3 pt-1 text-[12px] text-destructive">{fileError}</p>
+                    )}
+                    <div className="flex items-end gap-2 px-2 py-2">
+                      <Button
+                        type="button"
+                        variant={isThinkingModeEnabled ? "secondary" : "ghost"}
+                        aria-pressed={isThinkingModeEnabled}
+                        disabled={isSending}
+                        onClick={() => setIsThinkingModeEnabled((previous) => !previous)}
+                        className="h-9 shrink-0 rounded-full px-3 text-xs font-medium"
+                      >
+                        <Brain className="mr-1.5 h-3.5 w-3.5" />
+                        {isThinkingModeEnabled ? "Thinking On" : "Thinking Off"}
+                      </Button>
+                      <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        multiple
+                        className="hidden"
+                        onChange={handleFileSelect}
+                        disabled={isSending}
+                      />
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        disabled={isSending || pendingFiles.length >= 3}
+                        onClick={() => fileInputRef.current?.click()}
+                        className="h-9 w-9 shrink-0 rounded-full p-0 text-muted-foreground transition-colors duration-200 hover:bg-foreground/10 hover:text-foreground disabled:opacity-40"
+                        aria-label="Attach PDF"
+                        title="Attach PDF (max 3 files, 10 MB each)"
+                      >
+                        <Paperclip className="h-4 w-4" />
+                      </Button>
+                      <textarea
+                        ref={textareaRef}
+                        rows={1}
+                        value={draft}
+                        onChange={(event) => {
+                          setDraft(event.target.value)
+                          const el = event.target
+                          el.style.height = "auto"
+                          el.style.height = `${el.scrollHeight}px`
+                        }}
+                        onKeyDown={handleDraftKeyDown}
+                        placeholder="Ask a follow-up question..."
+                        className="min-h-10 max-h-40 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground"
+                      />
+                      <Button
+                        type="submit"
+                        variant="ghost"
+                        disabled={(draft.trim().length === 0 && pendingFiles.length === 0) || !canSendMessage}
+                        className="h-9 w-9 rounded-full p-0 text-black transition-colors duration-200 hover:bg-foreground/10 hover:text-black disabled:text-black/40 dark:text-white dark:hover:text-white dark:disabled:text-white/40"
+                      >
+                        {isSending ? (
+                          <LoaderCircle className="h-4 w-4 animate-spin" />
+                        ) : (
+                          <SendHorizontal className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </div>
                   </form>
                 </div>
               </div>
@@ -1453,20 +1578,34 @@ function DashboardChatPageContent() {
                       <Badge variant="outline">Rubric: {payload.rubric.criteria.length}</Badge>
                     ) : null}
                   </div>
-                  {attachmentNames.length > 0 ? (
-                    <div>
-                      <p className="text-muted-foreground">Attachment Files</p>
-                      <ul className="mt-1 list-disc space-y-1 pl-5 text-muted-foreground">
+                  <div>
+                    <p className="mb-1 text-muted-foreground">Assignment Documents</p>
+                    {attachmentNames.length > 0 ? (
+                      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
                         {attachmentNames.map((name, index) => (
                           <li key={`${name}-${index}`} className="break-all">
                             {name}
                           </li>
                         ))}
                       </ul>
-                    </div>
-                  ) : (
-                    <p className="text-muted-foreground">No attachments provided.</p>
-                  )}
+                    ) : (
+                      <p className="text-muted-foreground/60 text-xs">No assignment documents provided.</p>
+                    )}
+                  </div>
+                  <div className="border-t border-border/50 pt-3">
+                    <p className="mb-1 text-muted-foreground">User-Attached Files</p>
+                    {userAttachedFileNames.length > 0 ? (
+                      <ul className="list-disc space-y-1 pl-5 text-muted-foreground">
+                        {userAttachedFileNames.map((name, index) => (
+                          <li key={`${name}-${index}`} className="break-all">
+                            {name}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <p className="text-muted-foreground/60 text-xs">No files attached to messages yet.</p>
+                    )}
+                  </div>
                   {payload.dueAtISO ? (
                     <div>
                       <p className="text-muted-foreground">Due</p>
