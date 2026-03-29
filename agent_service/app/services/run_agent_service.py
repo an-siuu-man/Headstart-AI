@@ -26,7 +26,7 @@ from typing import Generator
 from ..core.logging import get_logger
 from ..schemas.requests import ChatStreamRequest, RunAgentRequest
 from ..schemas.responses import ChatCompletionResponse, RunAgentResponse
-from .pdf_text_service import extract_pdf_context
+from .pdf_text_service import extract_pdf_context, extract_text_from_pdf_files
 
 logger = get_logger("headstart.main")
 
@@ -57,6 +57,7 @@ def _stream_headstart_chat_answer(
     user_message: str,
     include_thinking: bool = False,
     calendar_context: dict | None = None,
+    user_attachments_context: str = "",
 ):
     """Lazy import to avoid loading LLM dependencies at module import time."""
     from ..orchestrators.headstart_orchestrator import stream_headstart_chat_answer
@@ -69,6 +70,7 @@ def _stream_headstart_chat_answer(
         user_message=user_message,
         include_thinking=include_thinking,
         calendar_context=calendar_context,
+        user_attachments_context=user_attachments_context,
     )
 
 
@@ -302,14 +304,16 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
       chat.started -> chat.delta* -> chat.completed
       or chat.error on failure.
     """
+    num_user_pdfs = len(req.user_pdf_files or [])
     logger.info(
-        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d | thinking_mode=%s",
+        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d | thinking_mode=%s | user_pdfs=%d",
         route_path,
         len(req.assignment_payload or {}),
         len(req.guide_markdown or ""),
         len(req.chat_history or []),
         len(req.retrieval_context or []),
         req.thinking_mode,
+        num_user_pdfs,
     )
 
     try:
@@ -320,6 +324,14 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
                 "progress_percent": 97,
                 "status_message": "Generating follow-up response",
             },
+        )
+
+        # Extract text from user-attached PDFs if provided
+        user_attachments_context = extract_text_from_pdf_files(req.user_pdf_files or [])
+        logger.info(
+            "User attachment extraction: %d files -> %d chars",
+            num_user_pdfs,
+            len(user_attachments_context),
         )
 
         chunks: list[str] = []
@@ -336,6 +348,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             user_message=req.user_message,
             include_thinking=req.thinking_mode,
             calendar_context=req.calendar_context.model_dump() if req.calendar_context else None,
+            user_attachments_context=user_attachments_context,
         ):
             delta, reasoning_delta = _split_stream_chunk(chunk)
             if not delta and not reasoning_delta:

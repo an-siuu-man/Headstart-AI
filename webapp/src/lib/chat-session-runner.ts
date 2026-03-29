@@ -15,6 +15,7 @@ import {
   updateChatMessageContent,
   updateChatSessionStatus,
 } from "@/lib/chat-repository";
+import { supabaseStorageCreateSignedUrl } from "@/lib/supabase-rest";
 import { getSharedAssignmentCalendarContextForChat } from "@/lib/assignment-calendar-context";
 import { type AssignmentPayload } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
@@ -440,8 +441,9 @@ async function runFollowupChat(input: {
   userMessageContent: string;
   thinkingMode: FollowupThinkingMode;
   requestUrl: string;
+  attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
 }) {
-  const { sessionId, assistantMessageId, userMessageContent, thinkingMode, requestUrl } = input;
+  const { sessionId, assistantMessageId, userMessageContent, thinkingMode, requestUrl, attachments } = input;
 
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let bufferedDelta = "";
@@ -556,6 +558,29 @@ async function runFollowupChat(input: {
       resolvedAssignmentRecordId = resolvedContext.assignment_id ?? null;
     }
 
+    // Generate signed URLs for user-attached PDFs
+    const userPdfFiles: Array<{ filename: string; storage_url: string; file_sha256: string }> = [];
+    if (attachments && attachments.length > 0) {
+      const chatUploadBucket = process.env.SUPABASE_ASSIGNMENT_PDF_BUCKET ?? "assignment-pdfs";
+      const signedUrlTtl = 600;
+      for (const attachment of attachments) {
+        try {
+          const signedUrl = await supabaseStorageCreateSignedUrl({
+            bucket: chatUploadBucket,
+            path: attachment.storage_path,
+            expiresInSeconds: signedUrlTtl,
+          });
+          userPdfFiles.push({
+            filename: attachment.filename,
+            storage_url: signedUrl,
+            file_sha256: attachment.file_sha256,
+          });
+        } catch (err) {
+          console.error(`[chat-runner] Failed to sign URL for attachment "${attachment.filename}":`, err);
+        }
+      }
+    }
+
     const streamResponse = await openAgentChatStream(
       agentUrl,
       JSON.stringify({
@@ -566,6 +591,7 @@ async function runFollowupChat(input: {
         user_message: userMessageContent,
         thinking_mode: thinkingMode === "thinking",
         calendar_context: calendarContext,
+        ...(userPdfFiles.length > 0 ? { user_pdf_files: userPdfFiles } : {}),
       }),
     );
 
@@ -739,6 +765,7 @@ export function startFollowupChatRun(input: {
   userMessageContent: string;
   thinkingMode?: FollowupThinkingMode;
   requestUrl: string;
+  attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
 }) {
   void runFollowupChat({
     ...input,

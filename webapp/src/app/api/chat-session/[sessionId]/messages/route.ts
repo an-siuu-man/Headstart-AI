@@ -14,6 +14,12 @@ function isGuideReady(sessionStatus: string, runtimeStatus: string | undefined) 
   return sessionStatus === "completed" || runtimeStatus === "completed";
 }
 
+type ChatAttachment = {
+  filename: string;
+  file_sha256: string;
+  storage_path: string;
+};
+
 export async function POST(
   req: Request,
   { params }: { params: Promise<{ sessionId: string }> },
@@ -27,6 +33,17 @@ export async function POST(
   const thinkingModeRaw =
     typeof body?.thinking_mode === "string" ? body.thinking_mode.trim() : "normal";
   const thinkingMode = thinkingModeRaw.toLowerCase();
+  const rawAttachments = Array.isArray(body?.attachments) ? body.attachments : [];
+  const attachments: ChatAttachment[] = rawAttachments
+    .slice(0, 3)
+    .filter(
+      (a: unknown): a is ChatAttachment =>
+        typeof a === "object" &&
+        a !== null &&
+        typeof (a as Record<string, unknown>).filename === "string" &&
+        typeof (a as Record<string, unknown>).file_sha256 === "string" &&
+        typeof (a as Record<string, unknown>).storage_path === "string",
+    );
 
   if (!userId) {
     return NextResponse.json(
@@ -35,9 +52,9 @@ export async function POST(
     );
   }
 
-  if (!content) {
+  if (!content && attachments.length === 0) {
     return NextResponse.json(
-      { error: "content is required" },
+      { error: "content or attachments are required" },
       { status: 400 },
     );
   }
@@ -81,6 +98,7 @@ export async function POST(
       metadata: {
         source: "dashboard",
         thinking_mode: thinkingMode,
+        ...(attachments.length > 0 ? { attachments } : {}),
       },
     });
 
@@ -104,6 +122,7 @@ export async function POST(
       userMessageContent: content,
       thinkingMode: thinkingMode === "thinking" ? "thinking" : "normal",
       requestUrl: req.url,
+      attachments,
     });
 
     const response = NextResponse.json({

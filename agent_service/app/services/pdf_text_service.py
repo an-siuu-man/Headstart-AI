@@ -886,3 +886,47 @@ def extract_all_pdf_text(req: RunAgentRequest) -> str:
     """
     text, _ = extract_pdf_context(req)
     return text
+
+
+def extract_text_from_pdf_files(pdf_files) -> str:
+    """
+    Download and extract plain text from a list of PdfFile objects.
+
+    Tries storage_url first, falls back to base64_data. Files that fail to
+    download or have no usable source are skipped with a warning log.
+
+    Returns a single string with each file's text separated by a header line.
+    """
+    if not pdf_files:
+        return ""
+
+    parts = []
+    for pdf_file in pdf_files:
+        pdf_bytes = None
+
+        if pdf_file.storage_url:
+            pdf_bytes = _download_pdf_from_storage_url(pdf_file.storage_url, pdf_file.filename)
+
+        if pdf_bytes is None and pdf_file.base64_data:
+            try:
+                pdf_bytes = _decode_pdf_base64(pdf_file.base64_data)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to decode base64 for user attachment %r: %s",
+                    pdf_file.filename,
+                    exc,
+                )
+                continue
+
+        if pdf_bytes is None:
+            logger.warning(
+                "Skipping user attachment %r: no usable storage_url or base64_data",
+                pdf_file.filename,
+            )
+            continue
+
+        text, _ = extract_pdf_context_from_pdf_bytes(pdf_bytes, pdf_file.filename)
+        if text:
+            parts.append(f"--- {pdf_file.filename} ---\n{text}")
+
+    return "\n\n".join(parts)

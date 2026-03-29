@@ -3,6 +3,7 @@
 import { memo, useMemo } from "react"
 import { format, isSameDay } from "date-fns"
 import { motion } from "framer-motion"
+import { FileText } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
@@ -109,6 +110,18 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
     [message.created_at],
   )
 
+  const attachments = useMemo(() => {
+    if (message.sender_role !== "user") return []
+    const raw = message.metadata?.attachments
+    if (!Array.isArray(raw)) return []
+    return raw.filter(
+      (a): a is { filename: string } =>
+        typeof a === "object" &&
+        a !== null &&
+        typeof (a as Record<string, unknown>).filename === "string",
+    )
+  }, [message.metadata, message.sender_role])
+
   const assistantVisibleText = assistantThinkState?.visibleMarkdown.trim() || ""
   const assistantThinkingCount = Math.max(
     assistantThinkState?.thinkBlockCount ?? 0,
@@ -149,10 +162,27 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
           ) : null}
         </div>
       ) : (
-        <div className="min-w-0 [font-family:var(--font-lexend)] [&_a]:font-medium [&_a]:text-blue-400 [&_a]:underline [&_code]:[font-family:var(--font-space-mono)] [&_code]:break-words [&_code]:rounded [&_code]:bg-zinc-600 [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:[font-family:var(--font-space-mono)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-zinc-800 [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-zinc-500/70 [&_thead]:bg-zinc-600/45 [&_th]:border-b [&_th]:border-zinc-500/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-zinc-500/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-zinc-600/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
-          <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
-            {message.content_text || ""}
-          </ReactMarkdown>
+        <div>
+          {attachments.length > 0 && (
+            <div className="mb-1.5 flex flex-wrap gap-1">
+              {attachments.map((a, i) => (
+                <span
+                  key={i}
+                  className="inline-flex items-center gap-1 rounded-md bg-zinc-600/60 px-2 py-0.5 text-[12px] text-zinc-200"
+                >
+                  <FileText className="h-3 w-3 shrink-0" />
+                  <span className="max-w-[160px] truncate">{a.filename}</span>
+                </span>
+              ))}
+            </div>
+          )}
+          {message.content_text ? (
+            <div className="min-w-0 [font-family:var(--font-lexend)] [&_a]:font-medium [&_a]:text-blue-400 [&_a]:underline [&_code]:[font-family:var(--font-space-mono)] [&_code]:break-words [&_code]:rounded [&_code]:bg-zinc-600 [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:[font-family:var(--font-space-mono)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-zinc-800 [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-zinc-500/70 [&_thead]:bg-zinc-600/45 [&_th]:border-b [&_th]:border-zinc-500/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-zinc-500/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-zinc-600/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+              <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
+                {message.content_text}
+              </ReactMarkdown>
+            </div>
+          ) : null}
         </div>
       )}
       {messageTimestampText ? (
