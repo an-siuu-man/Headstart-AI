@@ -69,6 +69,13 @@ export type ChatSessionDto = {
   messages: ChatMessageDto[];
 };
 
+export type GuideVersionMeta = {
+  version_number: number;
+  source: string;
+  content_length: number;
+  created_at: string;
+};
+
 export type PersistedSessionSnapshot = {
   sessionId: string;
   userId: string;

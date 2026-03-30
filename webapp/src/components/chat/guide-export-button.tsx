@@ -4,13 +4,7 @@ import { useState } from "react"
 import { FileText, FileDown } from "lucide-react"
 import { format } from "date-fns"
 import { Button } from "@/components/ui/button"
-
-type GuideVersionMeta = {
-  version_number: number
-  source: string
-  content_length: number
-  created_at: string
-}
+import { type GuideVersionMeta } from "@/lib/chat-types"
 
 type GuideExportButtonProps = {
   guideMarkdown: string

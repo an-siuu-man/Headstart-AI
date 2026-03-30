@@ -10,11 +10,10 @@ import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 
 import { type ChatMessageDto } from "@/lib/chat-types"
+import { removeThinkBlocks } from "@/lib/chat-utils"
 import { MARKDOWN_COMPONENTS } from "./markdown-components"
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
-const THINK_OPEN_TAG = "<think>"
-const THINK_CLOSE_TAG = "</think>"
 const REMARK_PLUGINS = [remarkGfm, remarkMath]
 const REHYPE_PLUGINS = [rehypeKatex]
 
@@ -22,45 +21,6 @@ type ChatMessageBubbleProps = {
   message: ChatMessageDto
   isLatestStreamingAssistant: boolean
   reduceMotion: boolean | null
-}
-
-function removeThinkBlocks(markdown: string) {
-  if (!markdown) {
-    return { visibleMarkdown: "", isThinking: false, thinkBlockCount: 0 }
-  }
-
-  let cursor = 0
-  let visible = ""
-  let thinkBlockCount = 0
-
-  while (cursor < markdown.length) {
-    const openIndex = markdown.indexOf(THINK_OPEN_TAG, cursor)
-    if (openIndex === -1) {
-      visible += markdown.slice(cursor)
-      break
-    }
-
-    visible += markdown.slice(cursor, openIndex)
-    thinkBlockCount += 1
-    const thinkStart = openIndex + THINK_OPEN_TAG.length
-    const closeIndex = markdown.indexOf(THINK_CLOSE_TAG, thinkStart)
-
-    if (closeIndex === -1) {
-      return {
-        visibleMarkdown: visible.replaceAll(THINK_CLOSE_TAG, ""),
-        isThinking: true,
-        thinkBlockCount,
-      }
-    }
-
-    cursor = closeIndex + THINK_CLOSE_TAG.length
-  }
-
-  return {
-    visibleMarkdown: visible.replaceAll(THINK_CLOSE_TAG, ""),
-    isThinking: false,
-    thinkBlockCount,
-  }
 }
 
 function formatMessageTimestamp(value: string | null | undefined) {
@@ -154,7 +114,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
               ))
             : null}
           {assistantVisibleText ? (
-            <div className="min-w-0 [font-family:var(--font-lexend)] [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_code]:[font-family:var(--font-space-mono)] [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_p]:font-light [&_pre]:[font-family:var(--font-space-mono)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-border/70 [&_thead]:bg-muted/45 [&_th]:border-b [&_th]:border-border/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-border/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-muted/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+            <div className="min-w-0 [font-family:var(--font-markdown-stack)] [&_a]:font-medium [&_a]:text-blue-600 [&_a]:underline [&_code]:[font-family:var(--font-mono-stack)] [&_code]:break-words [&_code]:rounded [&_code]:bg-muted [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_p]:font-light [&_pre]:[font-family:var(--font-mono-stack)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-muted [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-border/70 [&_thead]:bg-muted/45 [&_th]:border-b [&_th]:border-border/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-border/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-muted/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
                 {assistantVisibleText}
               </ReactMarkdown>
@@ -177,7 +137,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
             </div>
           )}
           {message.content_text ? (
-            <div className="min-w-0 [font-family:var(--font-lexend)] [&_a]:font-medium [&_a]:text-blue-400 [&_a]:underline [&_code]:[font-family:var(--font-space-mono)] [&_code]:break-words [&_code]:rounded [&_code]:bg-zinc-600 [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:[font-family:var(--font-space-mono)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-zinc-800 [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-zinc-500/70 [&_thead]:bg-zinc-600/45 [&_th]:border-b [&_th]:border-zinc-500/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-zinc-500/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-zinc-600/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
+            <div className="min-w-0 [font-family:var(--font-markdown-stack)] [&_a]:font-medium [&_a]:text-blue-400 [&_a]:underline [&_code]:[font-family:var(--font-mono-stack)] [&_code]:break-words [&_code]:rounded [&_code]:bg-zinc-600 [&_code]:px-1 [&_hr]:my-6 [&_li]:break-words [&_ol]:my-2 [&_ol]:list-decimal [&_ol]:pl-5 [&_p]:my-2 [&_p]:break-words [&_pre]:[font-family:var(--font-mono-stack)] [&_pre]:my-3 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_pre]:rounded-md [&_pre]:bg-zinc-800 [&_pre]:p-3 [&_table]:w-full [&_table]:min-w-[28rem] [&_table]:border-separate [&_table]:border-spacing-0 [&_table]:rounded-md [&_table]:border [&_table]:border-zinc-500/70 [&_thead]:bg-zinc-600/45 [&_th]:border-b [&_th]:border-zinc-500/70 [&_th]:px-2 [&_th]:py-1.5 [&_th]:text-left [&_th]:text-[13px] [&_th]:font-semibold [&_td]:border-b [&_td]:border-zinc-500/50 [&_td]:px-2 [&_td]:py-1.5 [&_td]:text-[13px] [&_tbody_tr:last-child_td]:border-b-0 [&_tbody_tr:nth-child(even)]:bg-zinc-600/25 [&_ul]:my-2 [&_ul]:list-disc [&_ul]:pl-5">
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
                 {message.content_text}
               </ReactMarkdown>

@@ -1,5 +1,44 @@
-import { Assignment, Course, GeneratedGuide, User, Stat } from "./types";
 import { addDays, subHours } from "date-fns";
+
+type User = {
+  id: string;
+  name: string;
+  email: string;
+  avatarUrl?: string;
+};
+
+type Course = {
+  id: string;
+  name: string;
+  code: string;
+  color: string;
+};
+
+type Assignment = {
+  id: string;
+  title: string;
+  courseId: string;
+  dueDate: string;
+  priority: "High" | "Medium" | "Low";
+  status: "Pending" | "In Progress" | "Completed";
+  points: number;
+};
+
+type Stat = {
+  label: string;
+  value: string | number;
+  change: string;
+  trend: "up" | "down" | "neutral";
+};
+
+type GeneratedGuide = {
+  id: string;
+  title: string;
+  courseId: string;
+  assignmentId: string;
+  generatedAt: string;
+  status: "Ready" | "Refreshing";
+};
 
 export const currentUser: User = {
   id: "user_1",
