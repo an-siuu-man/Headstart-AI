@@ -17,6 +17,7 @@ import {
   supabaseStorageUploadObject,
   supabaseTableRequest,
 } from "@/lib/supabase-rest";
+import { toOptionalString } from "@/lib/utils";
 
 type DbLmsIntegration = {
   id: string;
@@ -184,12 +185,6 @@ function toMessageDto(row: DbChatMessage): ChatMessageDto {
 function normalizeSource(value: unknown) {
   if (value === "extension_dom" || value === "sync") return value;
   return "extension_api";
-}
-
-function toOptionalString(value: unknown) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }
 
 function toTitle(payload: AssignmentPayload) {

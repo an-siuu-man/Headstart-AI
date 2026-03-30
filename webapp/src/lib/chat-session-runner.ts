@@ -21,6 +21,7 @@ import { supabaseStorageCreateSignedUrl } from "@/lib/supabase-rest";
 import { getSharedAssignmentCalendarContextForChat } from "@/lib/assignment-calendar-context";
 import { type AssignmentPayload } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
+import { toOptionalString } from "@/lib/utils";
 import { retrieveLexicalContext } from "@/lib/rag/lexical-retriever";
 
 type AgentRunEventName =
@@ -180,17 +181,6 @@ function toPercent(value: unknown, fallback: number) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return fallback;
   return Math.max(0, Math.min(100, Math.round(parsed)));
-}
-
-function toOptionalString(value: unknown) {
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : null;
-  }
-  if (typeof value === "number" && Number.isFinite(value)) {
-    return String(value);
-  }
-  return null;
 }
 
 async function openAgentRunStream(agentUrl: string, body: string) {

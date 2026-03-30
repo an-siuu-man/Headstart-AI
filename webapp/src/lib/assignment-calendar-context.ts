@@ -4,6 +4,7 @@ import { detectFreeSlots, recommendStudySessions, type FreeSlot, type PlannerBus
 import { resolveAssignmentRecordIdForUser } from "@/lib/chat-repository"
 import { GoogleCalendarApiError, listGoogleCalendarEvents, type GoogleCalendarListedEvent } from "@/lib/google-calendar"
 import { ensureGoogleCalendarAccessToken } from "@/lib/google-calendar-session"
+import { toOptionalString } from "@/lib/utils"
 import {
   getAssignmentCalendarMetadataForUser,
   getGoogleCalendarIntegration,
@@ -453,12 +454,6 @@ function parseIso(value: string | null | undefined) {
   if (!value) return null
   const date = new Date(value)
   return Number.isNaN(date.getTime()) ? null : date
-}
-
-function toOptionalString(value: unknown) {
-  if (typeof value !== "string") return null
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : null
 }
 
 function extractDomain(value: string | null | undefined) {

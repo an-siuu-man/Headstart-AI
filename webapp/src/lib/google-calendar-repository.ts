@@ -1,4 +1,5 @@
 import { supabaseTableRequest } from "@/lib/supabase-rest";
+import { toOptionalString } from "@/lib/utils";
 
 const GOOGLE_CALENDAR_TABLE = "google_calendar_integrations";
 const GOOGLE_CALENDAR_SELECT =
@@ -324,10 +325,4 @@ function asObject(value: unknown) {
     return {};
   }
   return value as Record<string, unknown>;
-}
-
-function toOptionalString(value: unknown) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : null;
 }

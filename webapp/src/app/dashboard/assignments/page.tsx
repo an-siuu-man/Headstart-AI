@@ -47,20 +47,7 @@ type AssignmentItem = {
   submitted_at: string | null
 }
 
-const container = {
-  hidden: { opacity: 0 },
-  show: {
-    opacity: 1,
-    transition: {
-      staggerChildren: 0.05,
-    },
-  },
-}
-
-const item = {
-  hidden: { opacity: 0, y: 10 },
-  show: { opacity: 1, y: 0 },
-}
+const EASE_OUT = [0.22, 1, 0.36, 1] as const
 
 function priorityTone(priority: AssignmentItem["priority"]) {
   if (priority === "High") return "border-red-200/80 bg-red-50 text-red-700"
@@ -287,17 +274,17 @@ function AssignmentList({
   }
 
   return (
-    <motion.div
-      variants={container}
-      initial="hidden"
-      animate="show"
-      className="grid gap-4 md:grid-cols-2 xl:grid-cols-3"
-    >
+    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
       {assignments.map((assignment) => {
         const dueAt = parseIsoDate(assignment.due_at_iso)
 
         return (
-          <motion.div key={assignment.id} variants={item}>
+          <motion.div
+            key={assignment.id}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.2, ease: EASE_OUT }}
+          >
             <Card className="flex h-full flex-col hover:shadow-md transition-shadow">
               <CardHeader className="flex flex-row items-start justify-between space-y-0 pb-2">
                 <div className="space-y-1">
@@ -377,6 +364,6 @@ function AssignmentList({
           </motion.div>
         )
       })}
-    </motion.div>
+    </div>
   )
 }
