@@ -8,7 +8,6 @@ import { startFollowupChatRun } from "@/lib/chat-session-runner";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
 
 export const runtime = "nodejs";
-const CHAT_THINKING_MODES = new Set(["normal", "thinking"]);
 
 function isGuideReady(sessionStatus: string, runtimeStatus: string | undefined) {
   return sessionStatus === "completed" || runtimeStatus === "completed";
@@ -30,9 +29,6 @@ export async function POST(
   const resolvedUser = await resolveRequestUser(req);
   const userId = resolvedUser?.user.id ?? "";
   const content = typeof body?.content === "string" ? body.content.trim() : "";
-  const thinkingModeRaw =
-    typeof body?.thinking_mode === "string" ? body.thinking_mode.trim() : "normal";
-  const thinkingMode = thinkingModeRaw.toLowerCase();
   const rawAttachments = Array.isArray(body?.attachments) ? body.attachments : [];
   const attachments: ChatAttachment[] = rawAttachments
     .slice(0, 3)
@@ -55,13 +51,6 @@ export async function POST(
   if (!content && attachments.length === 0) {
     return NextResponse.json(
       { error: "content or attachments are required" },
-      { status: 400 },
-    );
-  }
-
-  if (!CHAT_THINKING_MODES.has(thinkingMode)) {
-    return NextResponse.json(
-      { error: "thinking_mode must be 'normal' or 'thinking'" },
       { status: 400 },
     );
   }
@@ -97,7 +86,6 @@ export async function POST(
       format: "markdown",
       metadata: {
         source: "dashboard",
-        thinking_mode: thinkingMode,
         ...(attachments.length > 0 ? { attachments } : {}),
       },
     });
@@ -109,7 +97,6 @@ export async function POST(
       format: "markdown",
       metadata: {
         streaming: true,
-        thinking_mode: thinkingMode,
       },
     });
 
@@ -120,7 +107,6 @@ export async function POST(
       sessionId,
       assistantMessageId: assistantMessage.id,
       userMessageContent: content,
-      thinkingMode: thinkingMode === "thinking" ? "thinking" : "normal",
       requestUrl: req.url,
       attachments,
     });

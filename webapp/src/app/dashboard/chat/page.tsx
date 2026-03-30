@@ -4,7 +4,7 @@ import { type ChangeEvent, type FormEvent, type KeyboardEvent as ReactKeyboardEv
 import { useRouter, useSearchParams } from "next/navigation"
 import { format } from "date-fns"
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion"
-import { Brain, LoaderCircle, Paperclip, SendHorizontal, Trash2, X } from "lucide-react"
+import { LoaderCircle, Paperclip, RefreshCw, SendHorizontal, Trash2, X } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 
@@ -109,6 +109,13 @@ type ChatSessionAssignmentGroup = {
   dueAtISO: string | null
   latestUpdatedAt: number
   sessions: ChatSessionListItemResponse[]
+}
+
+type GuideVersionMeta = {
+  version_number: number
+  source: string
+  content_length: number
+  created_at: string
 }
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -297,7 +304,6 @@ function DashboardChatPageContent() {
   const [errorText, setErrorText] = useState<string | null>(null)
   const [draft, setDraft] = useState("")
   const [isSending, setIsSending] = useState(false)
-  const [isThinkingModeEnabled, setIsThinkingModeEnabled] = useState(false)
   const [showProgressPanel, setShowProgressPanel] = useState(false)
   const [calendarProposals, setCalendarProposals] = useState<
     Map<string, { assignmentId: string; sessions: Array<{ start_iso: string; end_iso: string; focus: string; priority: "high" | "medium" | "low" }> }>
@@ -307,6 +313,8 @@ function DashboardChatPageContent() {
   const [isContextDialogOpen, setIsContextDialogOpen] = useState(false)
   const [pendingFiles, setPendingFiles] = useState<File[]>([])
   const [fileError, setFileError] = useState<string | null>(null)
+  const [guideVersions, setGuideVersions] = useState<GuideVersionMeta[]>([])
+  const [isRegenerating, setIsRegenerating] = useState(false)
   const threadContainerRef = useRef<HTMLDivElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -330,6 +338,14 @@ function DashboardChatPageContent() {
       top: viewport.scrollHeight,
       behavior,
     })
+  }
+
+  function scrollToGuideVersion(versionNumber: number) {
+    const viewport = getThreadViewport()
+    if (!viewport) return
+    const target = viewport.querySelector<HTMLElement>(`[data-guide-version="${versionNumber}"]`)
+    if (!target) return
+    target.scrollIntoView({ behavior: "smooth", block: "start" })
   }
 
   function isNearBottom(threshold = 150) {
@@ -647,6 +663,29 @@ function DashboardChatPageContent() {
       eventSource.close()
     }
   }, [sessionId])
+
+  // Fetch guide versions whenever the session completes (or on initial load of a completed session)
+  useEffect(() => {
+    if (!sessionId || !session || session.session_id !== sessionId) return
+    if (session.status !== "completed") return
+
+    let isDisposed = false
+    fetch(`/api/chat-session/${encodeURIComponent(sessionId)}/guide-versions`, {
+      cache: "no-store",
+    })
+      .then((res) => res.ok ? res.json() : Promise.reject(new Error(`${res.status}`)))
+      .then((body: { versions?: GuideVersionMeta[] }) => {
+        if (!isDisposed && Array.isArray(body.versions)) {
+          setGuideVersions(body.versions)
+          setIsRegenerating(false)
+        }
+      })
+      .catch(() => {
+        // Non-critical — export button just won't show version picker
+      })
+    return () => { isDisposed = true }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, session?.status])
 
   // Restore calendar proposals from persisted message metadata on page load / session change
   useEffect(() => {
@@ -1095,6 +1134,28 @@ function DashboardChatPageContent() {
     )
   }
 
+  async function handleRegenerateGuide() {
+    if (!sessionId || !effectiveSession || isRegenerating) return
+    setIsRegenerating(true)
+    try {
+      const res = await fetch(
+        `/api/chat-session/${encodeURIComponent(sessionId)}/regenerate-guide`,
+        { method: "POST" },
+      )
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string }
+        setErrorText(body.error ?? `Regeneration failed (${res.status})`)
+        setIsRegenerating(false)
+      }
+      // On success: the SSE stream will push session.update events that stream
+      // the new guide into the guide panel. isRegenerating resets when the
+      // guide-versions refetch fires (on status → completed).
+    } catch {
+      setErrorText("Failed to start guide regeneration.")
+      setIsRegenerating(false)
+    }
+  }
+
   async function handleSend(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const text = draft.trim()
@@ -1137,7 +1198,6 @@ function DashboardChatPageContent() {
           },
           body: JSON.stringify({
             content: text,
-            thinking_mode: isThinkingModeEnabled ? "thinking" : "normal",
             ...(uploadedAttachments.length > 0 ? { attachments: uploadedAttachments } : {}),
           }),
         },
@@ -1343,6 +1403,7 @@ function DashboardChatPageContent() {
                   {hasGuideContent ? (
                     <motion.div
                       key="guide-body"
+                      data-guide-version={1}
                       initial={reduceMotion ? false : { opacity: 0, y: 10 }}
                       animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}
                       transition={reduceMotion ? undefined : { duration: 0.35, ease: EASE_OUT }}
@@ -1367,8 +1428,14 @@ function DashboardChatPageContent() {
                   const proposal = message.sender_role === "assistant"
                     ? calendarProposals.get(message.id)
                     : undefined
+                  const guideVersionNum = typeof message.metadata?.guide_version === "number"
+                    ? message.metadata.guide_version
+                    : null
                   return (
-                    <div key={message.id}>
+                    <div
+                      key={message.id}
+                      {...(guideVersionNum !== null ? { "data-guide-version": guideVersionNum } : {})}
+                    >
                       <ChatMessageBubble
                         message={message}
                         isLatestStreamingAssistant={
@@ -1431,6 +1498,8 @@ function DashboardChatPageContent() {
                   guideMarkdown={guideMarkdown}
                   assignmentTitle={payload?.title}
                   courseName={payload?.courseName}
+                  versions={guideVersions}
+                  sessionId={sessionId}
                 />
               </div>
             )}
@@ -1477,17 +1546,6 @@ function DashboardChatPageContent() {
                       <p className="px-3 pt-1 text-[12px] text-destructive">{fileError}</p>
                     )}
                     <div className="flex items-end gap-2 px-2 py-2">
-                      <Button
-                        type="button"
-                        variant={isThinkingModeEnabled ? "secondary" : "ghost"}
-                        aria-pressed={isThinkingModeEnabled}
-                        disabled={isSending}
-                        onClick={() => setIsThinkingModeEnabled((previous) => !previous)}
-                        className="h-9 shrink-0 rounded-full px-3 text-xs font-medium"
-                      >
-                        <Brain className="mr-1.5 h-3.5 w-3.5" />
-                        {isThinkingModeEnabled ? "Thinking On" : "Thinking Off"}
-                      </Button>
                       <input
                         ref={fileInputRef}
                         type="file"
@@ -1522,6 +1580,19 @@ function DashboardChatPageContent() {
                         placeholder="Ask a follow-up question..."
                         className="min-h-10 max-h-40 w-full resize-none overflow-y-auto border-0 bg-transparent px-3 py-2.5 text-sm outline-none placeholder:text-muted-foreground"
                       />
+                      {hasGuideContent && !isGuideStreaming && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          disabled={isSending || isRegenerating}
+                          onClick={handleRegenerateGuide}
+                          className="h-9 shrink-0 rounded-full px-3 text-xs font-medium text-muted-foreground hover:text-foreground"
+                          title="Update guide based on current chat context"
+                        >
+                          <RefreshCw className={`mr-1.5 h-3.5 w-3.5 ${isRegenerating ? "animate-spin" : ""}`} />
+                          {isRegenerating ? "Updating…" : "Update Guide"}
+                        </Button>
+                      )}
                       <Button
                         type="submit"
                         variant="ghost"
@@ -1541,6 +1612,39 @@ function DashboardChatPageContent() {
             </div>
           </div>
         </motion.div>
+
+        {/* Guide version timeline — vertical timeline column to the right of chat */}
+        {guideVersions.length > 0 && (
+          <div className="ml-2 flex flex-col items-center pt-3 self-start sticky top-0">
+            {guideVersions.map((v, index) => (
+              <div key={v.version_number} className="flex flex-col items-center">
+                {/* Connector line above (except first) */}
+                {index > 0 && (
+                  <div className="w-px h-6 bg-gradient-to-b from-border/80 to-border/40" />
+                )}
+                <button
+                  type="button"
+                  onClick={() => scrollToGuideVersion(v.version_number)}
+                  className={[
+                    "relative h-9 w-9 rounded-full border text-[11px] font-semibold transition-all duration-200",
+                    "bg-background shadow-sm",
+                    "border-border/70 text-muted-foreground",
+                    "hover:border-brand-blue/50 hover:text-brand-blue",
+                    "hover:shadow-[0_0_0_3px_rgba(0,81,186,0.12),0_2px_10px_rgba(0,81,186,0.20)]",
+                    "hover:bg-brand-blue/10",
+                  ].join(" ")}
+                  title={`v${v.version_number} — ${v.source === "initial_run" ? "Initial guide" : "Regenerated"}`}
+                >
+                  v{v.version_number}
+                </button>
+                {/* Connector line below (except last) */}
+                {index < guideVersions.length - 1 && (
+                  <div className="w-px h-6 bg-gradient-to-b from-border/40 to-border/80" />
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </motion.div>
 
       <Dialog open={isContextDialogOpen} onOpenChange={setIsContextDialogOpen}>

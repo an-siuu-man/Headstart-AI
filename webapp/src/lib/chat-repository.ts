@@ -82,6 +82,16 @@ type DbChatMessage = {
   created_at: string;
 };
 
+type DbGuideVersion = {
+  id: string;
+  session_id: string;
+  version_number: number;
+  content_text: string;
+  source: "initial_run" | "regenerated";
+  message_index_at_creation: number;
+  created_at: string;
+};
+
 type DbChatMessageListPreview = {
   session_id: string;
   message_index: number;
@@ -904,7 +914,7 @@ async function getPersistedSessionSnapshotWithMessageLimit(
       ? Math.max(1, Math.min(40, Math.floor(messageLimit)))
       : null;
 
-  const [snapshot, messages] = await Promise.all([
+  const [snapshot, messages, latestVersion] = await Promise.all([
     selectFirst<DbAssignmentSnapshot>({
       table: "assignment_snapshots",
       query: {
@@ -923,6 +933,15 @@ async function getPersistedSessionSnapshotWithMessageLimit(
         ...(boundedMessageLimit == null ? {} : { limit: boundedMessageLimit }),
       },
     }),
+    selectFirst<DbGuideVersion>({
+      table: "guide_versions",
+      query: {
+        session_id: eq(session.id),
+        select: "id,version_number,content_text",
+        order: "version_number.desc",
+        limit: 1,
+      },
+    }),
   ]);
 
   if (!snapshot) {
@@ -930,8 +949,12 @@ async function getPersistedSessionSnapshotWithMessageLimit(
   }
 
   const allMessages = boundedMessageLimit == null ? messages : [...messages].reverse();
+  // Prefer the latest explicit guide version; fall back to first assistant message for
+  // sessions created before the guide_versions migration.
   const guideMarkdown =
-    allMessages.find((m) => m.sender_role === "assistant")?.content_text ?? "";
+    latestVersion?.content_text ||
+    allMessages.find((m) => m.sender_role === "assistant")?.content_text ||
+    "";
 
   const payload = sanitizePayloadForResponse(
     asObject(snapshot.raw_payload) as AssignmentPayload,
@@ -1711,4 +1734,106 @@ export async function getSessionGuideAndRecentHistory(
     assignmentUuid: snapshot.assignmentUuid,
     assignmentRecordId: snapshot.assignmentRecordId ?? null,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Guide versioning
+// ---------------------------------------------------------------------------
+
+export async function insertGuideVersion(input: {
+  sessionId: string;
+  versionNumber: number;
+  contentText: string;
+  source: "initial_run" | "regenerated";
+  messageIndexAtCreation: number;
+}): Promise<{ id: string; version_number: number }> {
+  const row = await insertSingle<DbGuideVersion>({
+    table: "guide_versions",
+    row: {
+      session_id: input.sessionId,
+      version_number: input.versionNumber,
+      content_text: input.contentText,
+      source: input.source,
+      message_index_at_creation: input.messageIndexAtCreation,
+    },
+  });
+  return { id: row.id, version_number: row.version_number };
+}
+
+export async function getLatestGuideVersion(sessionId: string) {
+  return selectFirst<DbGuideVersion>({
+    table: "guide_versions",
+    query: {
+      session_id: eq(sessionId),
+      select: "id,version_number,content_text,source,created_at",
+      order: "version_number.desc",
+      limit: 1,
+    },
+  });
+}
+
+export async function getNextGuideVersionNumber(sessionId: string): Promise<number> {
+  const latest = await selectFirst<Pick<DbGuideVersion, "version_number">>({
+    table: "guide_versions",
+    query: {
+      session_id: eq(sessionId),
+      select: "version_number",
+      order: "version_number.desc",
+      limit: 1,
+    },
+  });
+  return (latest?.version_number ?? 0) + 1;
+}
+
+export async function listGuideVersions(sessionId: string): Promise<
+  Array<{
+    version_number: number;
+    source: string;
+    content_length: number;
+    created_at: string;
+  }>
+> {
+  const rows = await selectMany<DbGuideVersion>({
+    table: "guide_versions",
+    query: {
+      session_id: eq(sessionId),
+      select: "version_number,source,content_text,created_at",
+      order: "version_number.asc",
+    },
+  });
+  return rows.map((row) => ({
+    version_number: row.version_number,
+    source: row.source,
+    content_length: row.content_text.length,
+    created_at: row.created_at,
+  }));
+}
+
+export async function getGuideVersionContent(
+  sessionId: string,
+  versionNumber: number,
+): Promise<string | null> {
+  const row = await selectFirst<DbGuideVersion>({
+    table: "guide_versions",
+    query: {
+      session_id: eq(sessionId),
+      version_number: eq(versionNumber),
+      select: "version_number,content_text,source,created_at",
+      limit: 1,
+    },
+  });
+  return row ? row.content_text : null;
+}
+
+export async function getHighestMessageIndex(sessionId: string): Promise<number> {
+  const row = await selectFirst<Pick<DbChatMessage, "message_index">>({
+    table: "chat_messages",
+    query: {
+      session_id: eq(sessionId),
+      select: "message_index",
+      order: "message_index.desc",
+      limit: 1,
+    },
+  });
+  return row?.message_index ?? 0;
 }

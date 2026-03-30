@@ -10,7 +10,9 @@ import {
   setRuntimeProgress,
 } from "@/lib/chat-runtime-store";
 import {
+  getHighestMessageIndex,
   getSessionGuideAndRecentHistory,
+  insertGuideVersion,
   listSignedSnapshotPdfFiles,
   updateChatMessageContent,
   updateChatSessionStatus,
@@ -52,7 +54,6 @@ const MAX_CHAT_OBJECT_KEYS = 40;
 const MAX_CHAT_OBJECT_DEPTH = 4;
 const FOLLOWUP_CHAT_HISTORY_LIMIT = 8;
 const ASSISTANT_PERSIST_INTERVAL_MS = 1500;
-type FollowupThinkingMode = "normal" | "thinking";
 
 function toErrorMessage(err: unknown) {
   if (err instanceof Error) return err.message;
@@ -382,6 +383,18 @@ async function runInitialGuide(input: {
         await updateChatSessionStatus(sessionId, "completed");
 
         markRuntimeCompleted(sessionId, guideMarkdown);
+
+        // Persist v1 — best-effort; don't fail the whole run if this errors
+        insertGuideVersion({
+          sessionId,
+          versionNumber: 1,
+          contentText: guideMarkdown,
+          source: "initial_run",
+          messageIndexAtCreation: 0,
+        }).catch((err: unknown) => {
+          console.error("[chat-runner] Failed to persist guide v1:", err);
+        });
+
         hasCompleted = true;
         break;
       }
@@ -439,11 +452,10 @@ async function runFollowupChat(input: {
   sessionId: string;
   assistantMessageId: string;
   userMessageContent: string;
-  thinkingMode: FollowupThinkingMode;
   requestUrl: string;
   attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
 }) {
-  const { sessionId, assistantMessageId, userMessageContent, thinkingMode, requestUrl, attachments } = input;
+  const { sessionId, assistantMessageId, userMessageContent, requestUrl, attachments } = input;
 
   let flushTimer: ReturnType<typeof setInterval> | null = null;
   let bufferedDelta = "";
@@ -475,7 +487,6 @@ async function runFollowupChat(input: {
     lastPersistAt = now;
     persistAssistant(assistantContent, {
       streaming: true,
-      thinking_mode: thinkingMode,
     });
   };
 
@@ -589,7 +600,7 @@ async function runFollowupChat(input: {
         chat_history: chatHistory,
         retrieval_context: retrievalContext,
         user_message: userMessageContent,
-        thinking_mode: thinkingMode === "thinking",
+        thinking_mode: false,
         calendar_context: calendarContext,
         ...(userPdfFiles.length > 0 ? { user_pdf_files: userPdfFiles } : {}),
       }),
@@ -682,7 +693,6 @@ async function runFollowupChat(input: {
           metadata: {
             streaming: false,
             completed: true,
-            thinking_mode: thinkingMode,
             ...(firstProposal ? { calendar_proposal: firstProposal } : {}),
           },
         });
@@ -741,7 +751,6 @@ async function runFollowupChat(input: {
         streaming: false,
         failed: true,
         error: errorMessage,
-        thinking_mode: thinkingMode,
       },
     }).catch(() => undefined);
 
@@ -763,12 +772,267 @@ export function startFollowupChatRun(input: {
   sessionId: string;
   assistantMessageId: string;
   userMessageContent: string;
-  thinkingMode?: FollowupThinkingMode;
   requestUrl: string;
   attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
 }) {
-  void runFollowupChat({
-    ...input,
-    thinkingMode: input.thinkingMode ?? "normal",
-  });
+  void runFollowupChat(input);
+}
+
+// ---------------------------------------------------------------------------
+// Guide regeneration — streams a new guide version as a chat message
+// ---------------------------------------------------------------------------
+
+const REGEN_CHAT_HISTORY_LIMIT = 50;
+const REGEN_ASSISTANT_PERSIST_INTERVAL_MS = 1500;
+
+async function runGuideRegeneration(input: {
+  sessionId: string;
+  assistantMessageId: string;
+  versionNumber: number;
+  requestUrl: string;
+}) {
+  const { sessionId, assistantMessageId, versionNumber } = input;
+  let flushTimer: ReturnType<typeof setInterval> | null = null;
+  let bufferedDelta = "";
+  let assistantContent = "";
+  let persistChain: Promise<void> = Promise.resolve();
+  let lastPersistAt = 0;
+  let pendingPersist = false;
+
+  const persistAssistant = (content: string, metadata: Record<string, unknown>) => {
+    persistChain = persistChain
+      .then(async () => {
+        await updateChatMessageContent({ messageId: assistantMessageId, content, metadata });
+      })
+      .catch(() => undefined);
+  };
+
+  const maybePersistAssistant = (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastPersistAt < REGEN_ASSISTANT_PERSIST_INTERVAL_MS) {
+      pendingPersist = true;
+      return;
+    }
+    pendingPersist = false;
+    lastPersistAt = now;
+    persistAssistant(assistantContent, { streaming: true, guide_version: versionNumber });
+  };
+
+  const flushDelta = () => {
+    if (!bufferedDelta) return;
+    const delta = bufferedDelta;
+    bufferedDelta = "";
+    assistantContent += delta;
+    emitChatMessageDelta(sessionId, {
+      messageId: assistantMessageId,
+      delta,
+      content: assistantContent,
+    });
+    maybePersistAssistant();
+  };
+
+  try {
+    patchRuntimeSession(sessionId, {
+      status: "running",
+      stage: "chat_streaming",
+      progressPercent: 97,
+      statusMessage: `Updating guide (v${versionNumber})`,
+      error: undefined,
+    });
+
+    const sessionContext = await getSessionGuideAndRecentHistory(
+      sessionId,
+      REGEN_CHAT_HISTORY_LIMIT,
+    );
+    if (!sessionContext) {
+      throw new Error("Session context not found.");
+    }
+
+    const retrievalContext = retrieveLexicalContext({
+      guideMarkdown: sessionContext.guideMarkdown,
+      payload: sessionContext.payload,
+      query: "regenerate full study guide",
+      maxChunks: 6,
+      maxChars: 700,
+    });
+
+    const agentUrl = process.env.AGENT_SERVICE_URL;
+    if (!agentUrl) {
+      throw new Error("AGENT_SERVICE_URL not set");
+    }
+
+    const chatHistory = toAgentHistory(sessionContext.messages)
+      .filter((message) => message.content.trim().length > 0)
+      .slice(-REGEN_CHAT_HISTORY_LIMIT);
+    const assignmentPayload = sanitizeAssignmentPayloadForFollowup(sessionContext.payload);
+
+    const regenerationInstruction =
+      `Based on everything we have discussed so far and any files I've attached, ` +
+      `please regenerate a complete, updated study guide for this assignment. ` +
+      `Output ONLY the full guide in markdown — no conversational text, no preamble. ` +
+      `Do NOT include calendar scheduling proposals or time-block suggestions.`;
+
+    const streamResponse = await openAgentChatStream(
+      agentUrl,
+      JSON.stringify({
+        assignment_payload: assignmentPayload,
+        guide_markdown: sessionContext.guideMarkdown,
+        chat_history: chatHistory,
+        retrieval_context: retrievalContext,
+        user_message: regenerationInstruction,
+        thinking_mode: false,
+        // Omit calendar_context entirely — guide updates should not include scheduling
+      }),
+    );
+
+    if (!streamResponse.ok) {
+      const rawText = await streamResponse.text();
+      throw new Error(`Agent chat stream error (${streamResponse.status}): ${rawText}`);
+    }
+    if (!streamResponse.body) {
+      throw new Error("Agent chat stream has no body.");
+    }
+
+    flushTimer = setInterval(flushDelta, 80);
+    let hasCompleted = false;
+
+    for await (const message of readSseStream(streamResponse.body)) {
+      const parsed = parseChatEvent(message);
+      if (!parsed) continue;
+      const { event, data } = parsed;
+
+      if (event === "chat.started") {
+        patchRuntimeSession(sessionId, {
+          status: "running",
+          stage: "chat_streaming",
+          progressPercent: toPercent(data.progress_percent, 97),
+          statusMessage: `Updating guide (v${versionNumber})`,
+        });
+        continue;
+      }
+
+      if (event === "chat.delta") {
+        if (typeof data.delta === "string" && data.delta.length > 0) {
+          bufferedDelta += data.delta;
+        }
+        continue;
+      }
+
+      if (event === "chat.completed") {
+        flushDelta();
+        if (pendingPersist) maybePersistAssistant(true);
+
+        if (typeof data.assistant_message === "string" && data.assistant_message.trim()) {
+          assistantContent = data.assistant_message;
+        }
+
+        await persistChain;
+
+        // Strip any calendar_proposal tags the model may emit
+        const guideMarkdown = assistantContent
+          .replace(/<calendar_proposal>[\s\S]*?<\/calendar_proposal>/g, "")
+          .trim();
+
+        if (!guideMarkdown) {
+          throw new Error("Agent returned empty guide markdown during regeneration.");
+        }
+
+        const highestIndex = await getHighestMessageIndex(sessionId).catch(() => 0);
+
+        await insertGuideVersion({
+          sessionId,
+          versionNumber,
+          contentText: guideMarkdown,
+          source: "regenerated",
+          messageIndexAtCreation: highestIndex,
+        });
+
+        await updateChatMessageContent({
+          messageId: assistantMessageId,
+          content: guideMarkdown,
+          metadata: {
+            streaming: false,
+            completed: true,
+            guide_version: versionNumber,
+          },
+        });
+
+        emitChatMessageCompleted(sessionId, {
+          messageId: assistantMessageId,
+          content: guideMarkdown,
+        });
+
+        patchRuntimeSession(sessionId, {
+          status: "completed",
+          stage: "completed",
+          progressPercent: 100,
+          statusMessage: "Guide updated",
+          error: undefined,
+        });
+
+        hasCompleted = true;
+        break;
+      }
+
+      if (event === "chat.error") {
+        const messageText =
+          typeof data.message === "string" && data.message.trim()
+            ? data.message
+            : "Guide update failed.";
+        throw new Error(messageText);
+      }
+    }
+
+    flushDelta();
+    if (!hasCompleted) {
+      throw new Error("Agent stream ended before completion during guide update.");
+    }
+  } catch (err) {
+    flushDelta();
+    if (pendingPersist) maybePersistAssistant(true);
+    await persistChain;
+
+    const errorMessage = toErrorMessage(err);
+
+    const fallbackContent = assistantContent.trim()
+      ? `${assistantContent}\n\n_Guide update could not be completed: ${errorMessage}_`
+      : `_Guide update failed: ${errorMessage}_`;
+
+    await updateChatMessageContent({
+      messageId: assistantMessageId,
+      content: fallbackContent,
+      metadata: {
+        streaming: false,
+        failed: true,
+        error: errorMessage,
+        guide_version: versionNumber,
+      },
+    }).catch(() => undefined);
+
+    emitChatMessageCompleted(sessionId, {
+      messageId: assistantMessageId,
+      content: fallbackContent,
+    });
+
+    patchRuntimeSession(sessionId, {
+      status: "completed",
+      stage: "completed",
+      progressPercent: 100,
+      statusMessage: "Guide update failed",
+      error: errorMessage,
+    });
+  } finally {
+    if (flushTimer) {
+      clearInterval(flushTimer);
+    }
+  }
+}
+
+export function startGuideRegeneration(input: {
+  sessionId: string;
+  assistantMessageId: string;
+  versionNumber: number;
+  requestUrl: string;
+}) {
+  void runGuideRegeneration(input);
 }
