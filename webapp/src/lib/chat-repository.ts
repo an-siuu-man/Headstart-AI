@@ -1948,6 +1948,68 @@ export type AssignmentDetailResult = {
   latestSessionId: string | null;
 };
 
+export type ResourceItemType = "guide" | "pdf" | "link";
+
+export type ResourceLibraryItem = {
+  id: string;
+  type: ResourceItemType;
+  title: string;
+  assignment_id: string | null;
+  assignment_title: string;
+  course_name: string | null;
+  due_at_iso: string | null;
+  session_id: string | null;
+  created_at: number;
+  updated_at: number;
+  byte_size: number | null;
+  url: string | null;
+  guide_version_count: number | null;
+};
+
+export type ResourceLibraryResult = {
+  recent: ResourceLibraryItem[];
+  items: ResourceLibraryItem[];
+  facets: {
+    type_counts: {
+      all: number;
+      guide: number;
+      pdf: number;
+      link: number;
+    };
+    courses: string[];
+  };
+};
+
+type ResourceAssignmentGroup = {
+  assignmentKey: string;
+  assignmentId: string | null;
+  assignmentTitle: string;
+  courseName: string | null;
+  dueAtISO: string | null;
+  assignmentUrl: string | null;
+  latestSessionId: string;
+  latestSessionStatus: ChatSessionStatus;
+  latestSessionUpdatedAt: number;
+  latestAssignmentUuid: string;
+  attachmentCount: number;
+};
+
+function normalizeResourceAssignmentKey(item: UserChatSessionListItem) {
+  if (item.context.assignmentRecordId) {
+    return item.context.assignmentRecordId;
+  }
+  const title = item.context.assignmentTitle.trim().toLowerCase();
+  const course = (item.context.courseName ?? "").trim().toLowerCase();
+  const due = item.context.dueAtISO ?? "";
+  return `${title}::${course}::${due}`;
+}
+
+function toEpochOrFallback(value: string | null | undefined, fallback: number) {
+  if (!value) return fallback;
+  const ts = Date.parse(value);
+  return Number.isNaN(ts) ? fallback : ts;
+}
+
 export async function getAssignmentDetailForUser(input: {
   userId: string;
   assignmentId: string;
@@ -2042,5 +2104,160 @@ export async function getAssignmentDetailForUser(input: {
     latestAssignmentUuid,
     sessions,
     latestSessionId: latestSession?.id ?? null,
+  };
+}
+
+export async function listResourcesForUser(input: {
+  userId: string;
+  limit?: number;
+}): Promise<ResourceLibraryResult> {
+  const boundedLimit = Math.max(1, Math.min(500, Math.floor(input.limit ?? 250)));
+  const sessions = await listPersistedChatSessionsForUser(input.userId, 200);
+
+  if (sessions.length === 0) {
+    return {
+      recent: [],
+      items: [],
+      facets: {
+        type_counts: {
+          all: 0,
+          guide: 0,
+          pdf: 0,
+          link: 0,
+        },
+        courses: [],
+      },
+    };
+  }
+
+  const assignmentGroups = new Map<string, ResourceAssignmentGroup>();
+  for (const session of sessions) {
+    const key = normalizeResourceAssignmentKey(session);
+    if (assignmentGroups.has(key)) continue;
+    assignmentGroups.set(key, {
+      assignmentKey: key,
+      assignmentId: session.context.assignmentRecordId,
+      assignmentTitle: session.context.assignmentTitle,
+      courseName: session.context.courseName,
+      dueAtISO: session.context.dueAtISO,
+      assignmentUrl: session.context.assignmentUrl,
+      latestSessionId: session.sessionId,
+      latestSessionStatus: session.status,
+      latestSessionUpdatedAt: session.updatedAt,
+      latestAssignmentUuid: session.assignmentUuid,
+      attachmentCount: session.context.attachmentCount,
+    });
+  }
+
+  const groupedItems = await Promise.all(
+    Array.from(assignmentGroups.values()).map(async (group) => {
+      const items: ResourceLibraryItem[] = [];
+
+      if (group.assignmentUrl) {
+        items.push({
+          id: `link:${group.assignmentKey}`,
+          type: "link",
+          title: group.assignmentTitle,
+          assignment_id: group.assignmentId,
+          assignment_title: group.assignmentTitle,
+          course_name: group.courseName,
+          due_at_iso: group.dueAtISO,
+          session_id: group.latestSessionId,
+          created_at: group.latestSessionUpdatedAt,
+          updated_at: group.latestSessionUpdatedAt,
+          byte_size: null,
+          url: group.assignmentUrl,
+          guide_version_count: null,
+        });
+      }
+
+      if (
+        group.latestSessionStatus === "completed" ||
+        group.latestSessionStatus === "archived"
+      ) {
+        const versions = await listGuideVersions(group.latestSessionId).catch(() => []);
+        if (versions.length > 0) {
+          const latestVersion = versions[versions.length - 1]!;
+          const latestGuideEpoch = toEpochOrFallback(
+            latestVersion.created_at,
+            group.latestSessionUpdatedAt,
+          );
+          items.push({
+            id: `guide:${group.assignmentKey}:${group.latestSessionId}`,
+            type: "guide",
+            title: `${group.assignmentTitle} Study Guide`,
+            assignment_id: group.assignmentId,
+            assignment_title: group.assignmentTitle,
+            course_name: group.courseName,
+            due_at_iso: group.dueAtISO,
+            session_id: group.latestSessionId,
+            created_at: latestGuideEpoch,
+            updated_at: latestGuideEpoch,
+            byte_size: null,
+            url: `/dashboard/chat?session=${encodeURIComponent(group.latestSessionId)}`,
+            guide_version_count: versions.length,
+          });
+        }
+      }
+
+      if (group.attachmentCount > 0 && group.latestAssignmentUuid) {
+        const pdfFiles = await listSignedSnapshotPdfFiles(group.latestAssignmentUuid).catch(
+          () => [],
+        );
+        for (const file of pdfFiles) {
+          items.push({
+            id: `pdf:${group.assignmentKey}:${file.fileSha256}`,
+            type: "pdf",
+            title: file.filename,
+            assignment_id: group.assignmentId,
+            assignment_title: group.assignmentTitle,
+            course_name: group.courseName,
+            due_at_iso: group.dueAtISO,
+            session_id: group.latestSessionId,
+            created_at: group.latestSessionUpdatedAt,
+            updated_at: group.latestSessionUpdatedAt,
+            byte_size: file.byteSize ?? null,
+            url: file.signedUrl,
+            guide_version_count: null,
+          });
+        }
+      }
+
+      return items;
+    }),
+  );
+
+  const allItems = groupedItems
+    .flat()
+    .sort((left, right) => right.updated_at - left.updated_at || left.id.localeCompare(right.id));
+  const limitedItems = allItems.slice(0, boundedLimit);
+
+  const typeCounts = {
+    all: allItems.length,
+    guide: 0,
+    pdf: 0,
+    link: 0,
+  };
+  for (const item of allItems) {
+    if (item.type === "guide") typeCounts.guide += 1;
+    if (item.type === "pdf") typeCounts.pdf += 1;
+    if (item.type === "link") typeCounts.link += 1;
+  }
+
+  const courses = Array.from(
+    new Set(
+      allItems
+        .map((item) => toOptionalString(item.course_name))
+        .filter((name): name is string => Boolean(name)),
+    ),
+  ).sort((left, right) => left.localeCompare(right));
+
+  return {
+    recent: allItems.slice(0, 8),
+    items: limitedItems,
+    facets: {
+      type_counts: typeCounts,
+      courses,
+    },
   };
 }
