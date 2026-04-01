@@ -300,49 +300,32 @@ export default function DashboardCalendarPage() {
             <CardDescription>
               Filter event sources to declutter the month view and focus on what needs attention.
             </CardDescription>
-            <div className="mt-1 grid gap-2 sm:grid-cols-3">
-              <CalendarSourceStat
-                label="Assignment Due"
-                count={sourceCounts.assignmentDue}
-                toneClass="border-red-300/55 bg-red-100/70 text-red-700 dark:border-red-500/35 dark:bg-red-500/14 dark:text-red-200"
-              />
-              <CalendarSourceStat
-                label="Study Blocks"
-                count={sourceCounts.studyBlocks}
-                toneClass="border-blue-300/55 bg-blue-100/70 text-blue-700 dark:border-blue-500/35 dark:bg-blue-500/14 dark:text-blue-200"
-              />
-              <CalendarSourceStat
-                label="Google Events"
-                count={sourceCounts.googleEvents}
-                toneClass="border-teal-300/55 bg-teal-100/70 text-teal-700 dark:border-teal-500/35 dark:bg-teal-500/14 dark:text-teal-200"
-              />
-            </div>
             <div className="rounded-xl border border-border/65 bg-background/65 p-2">
               <div className="flex flex-wrap items-center gap-2">
-              <SourceToggle
-                label="Assignment Due"
-                count={sourceCounts.assignmentDue}
-                active={showAssignmentDue}
-                onToggle={() => setShowAssignmentDue((v) => !v)}
-                dotClass="bg-red-500"
-                icon={CalendarX}
-              />
-              <SourceToggle
-                label="Study Time Blocks"
-                count={sourceCounts.studyBlocks}
-                active={showStudyBlocks}
-                onToggle={() => setShowStudyBlocks((v) => !v)}
-                dotClass="bg-blue-500"
-                icon={CalendarDays}
-              />
-              <SourceToggle
-                label="Google Events"
-                count={sourceCounts.googleEvents}
-                active={showGoogleEvents}
-                onToggle={() => setShowGoogleEvents((v) => !v)}
-                dotClass="bg-teal-500"
-                icon={CalendarCheck}
-              />
+                <SourceToggle
+                  label="Assignment Due"
+                  count={sourceCounts.assignmentDue}
+                  active={showAssignmentDue}
+                  onToggle={() => setShowAssignmentDue((v) => !v)}
+                  dotClass="bg-red-500"
+                  icon={CalendarX}
+                />
+                <SourceToggle
+                  label="Study Time Blocks"
+                  count={sourceCounts.studyBlocks}
+                  active={showStudyBlocks}
+                  onToggle={() => setShowStudyBlocks((v) => !v)}
+                  dotClass="bg-blue-500"
+                  icon={CalendarDays}
+                />
+                <SourceToggle
+                  label="Google Events"
+                  count={sourceCounts.googleEvents}
+                  active={showGoogleEvents}
+                  onToggle={() => setShowGoogleEvents((v) => !v)}
+                  dotClass="bg-teal-500"
+                  icon={CalendarCheck}
+                />
               </div>
             </div>
           </CardHeader>
@@ -450,28 +433,6 @@ function GoogleStatusBadge({ status }: { status: GoogleIntegrationStatus }) {
       <Icon className="h-3 w-3 shrink-0" />
       Google: {googleStatusLabel(status)}
     </Badge>
-  )
-}
-
-function CalendarSourceStat({
-  label,
-  count,
-  toneClass,
-}: {
-  label: string
-  count: number
-  toneClass: string
-}) {
-  return (
-    <div
-      className={cn(
-        "rounded-lg border px-3 py-2 text-sm shadow-[0_10px_20px_-18px_rgba(15,23,42,0.75)]",
-        toneClass,
-      )}
-    >
-      <p className="text-[11px] font-semibold uppercase tracking-[0.08em] opacity-90">{label}</p>
-      <p className="mt-0.5 text-base font-semibold tabular-nums">{count}</p>
-    </div>
   )
 }
 

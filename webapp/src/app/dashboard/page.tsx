@@ -334,13 +334,14 @@ export default function Dashboard() {
                     const dueAt = parseIsoDate(assignment.due_at_iso)
                     const isOverdue =
                       !assignment.is_submitted && dueAt ? dueAt.getTime() < Date.now() : false
+                    const assignmentHref = assignment.assignment_id
+                      ? `/dashboard/assignments/${encodeURIComponent(assignment.assignment_id)}`
+                      : "/dashboard/assignments"
 
                 return (
                   <Link
                     key={assignment.id}
-                    href={`/dashboard/chat?session=${encodeURIComponent(
-                      assignment.latest_session_id,
-                    )}`}
+                    href={assignmentHref}
                     className="group block min-h-[118px] rounded-xl border border-border/70 bg-background/70 p-4 shadow-[0_10px_26px_-20px_rgba(15,23,42,0.48)] transition-all duration-200 hover:-translate-y-0.5 hover:border-border hover:shadow-[0_18px_32px_-22px_rgba(15,23,42,0.55)]"
                   >
                     <div className="flex items-start justify-between gap-3">

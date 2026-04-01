@@ -90,10 +90,7 @@ export function ChatThread({
   threadContainerRef,
 }: ChatThreadProps) {
   const deferredGuideMarkdown = useDeferredValue(guideMarkdown)
-  const guideStreamingTail =
-    isGuideStreaming && deferredGuideMarkdown !== guideMarkdown
-      ? guideMarkdown.slice(deferredGuideMarkdown.length)
-      : ""
+  const guideTailText = guideMarkdown.slice(deferredGuideMarkdown.length)
 
   const progressPanelTone =
     session?.status === "completed"
@@ -175,11 +172,10 @@ export function ChatThread({
                     <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
                       {deferredGuideMarkdown}
                     </ReactMarkdown>
-                    {guideStreamingTail ? (
-                      <span className="whitespace-pre-wrap font-light">{guideStreamingTail}</span>
-                    ) : null}
-                    {isGuideStreaming ? (
-                      <span aria-hidden="true" className="streaming-cursor">▮</span>
+                    {guideTailText ? (
+                      <span key={deferredGuideMarkdown.length} className="whitespace-pre-wrap font-light stream-chunk-in">
+                        {guideTailText}
+                      </span>
                     ) : null}
                   </div>
                 </motion.div>

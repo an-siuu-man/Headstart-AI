@@ -1,5 +1,6 @@
 "use client"
 
+import Link from "next/link"
 import { Suspense, useEffect, useMemo, useRef, useState } from "react"
 import { useRouter, useSearchParams } from "next/navigation"
 import { motion, useReducedMotion } from "framer-motion"
@@ -15,6 +16,14 @@ import { GuideVersionTimeline } from "@/components/chat/guide-version-timeline"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
+import {
+  Breadcrumb,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbList,
+  BreadcrumbPage,
+  BreadcrumbSeparator,
+} from "@/components/ui/breadcrumb"
 import {
   extractGuideMarkdown,
   formatDateTime,
@@ -92,10 +101,7 @@ function DashboardChatPageContent() {
   const latestAssistantMessageIdRef = useRef<string | null>(null)
   const previousGuideLengthRef = useRef(0)
   const lastScrollTimeRef = useRef(0)
-  const pendingDeltasRef = useRef<
-    Array<{ message_id: string; delta?: string; content?: string; shouldAutoScroll: boolean }>
-  >([])
-  const rafIdRef = useRef<number | null>(null)
+  const initialScrollDoneRef = useRef<string | null>(null)
   const reduceMotion = useReducedMotion()
 
   function getThreadViewport() {
@@ -191,6 +197,7 @@ function DashboardChatPageContent() {
       latestAssistantMessageIdRef.current = null
       return
     }
+    initialScrollDoneRef.current = null
 
     const streamUrl = `/api/chat-session/${encodeURIComponent(sessionId)}/events`
     const eventSource = new EventSource(streamUrl)
@@ -275,37 +282,17 @@ function DashboardChatPageContent() {
         }
         if (!payload.message_id) return
 
-        pendingDeltasRef.current.push({
-          message_id: payload.message_id,
-          delta: payload.delta,
-          content: payload.content,
-          shouldAutoScroll: isNearBottom(),
-        })
-
-        if (rafIdRef.current === null) {
-          rafIdRef.current = requestAnimationFrame(() => {
-            rafIdRef.current = null
-            if (isDisposed) return
-            const batch = pendingDeltasRef.current.splice(0)
-            if (batch.length === 0) return
-
-            let batchShouldScroll = false
-            setSession((previous) => {
-              if (!previous || previous.session_id !== sessionId) return previous
-              let next = previous
-              for (const item of batch) {
-                if (item.shouldAutoScroll) batchShouldScroll = true
-                next = patchSessionMessageContent(next, item.message_id, (previousText) => {
-                  if (typeof item.content === "string") return item.content
-                  return `${previousText}${item.delta ?? ""}`
-                })
-              }
-              latestSessionRef.current = next
-              return next
-            })
-            if (batchShouldScroll) throttledScrollToBottom()
+        const shouldScroll = isNearBottom()
+        setSession((previous) => {
+          if (!previous || previous.session_id !== sessionId) return previous
+          const next = patchSessionMessageContent(previous, payload.message_id!, (previousText) => {
+            if (typeof payload.content === "string") return payload.content
+            return `${previousText}${payload.delta ?? ""}`
           })
-        }
+          latestSessionRef.current = next
+          return next
+        })
+        if (shouldScroll) throttledScrollToBottom()
       } catch {
         setErrorText("Unable to parse chat delta event.")
       }
@@ -329,6 +316,7 @@ function DashboardChatPageContent() {
           return next
         })
         setIsSending(false)
+        requestAnimationFrame(() => scrollThreadToBottom("smooth"))
       } catch {
         setErrorText("Unable to parse chat completion event.")
       }
@@ -396,10 +384,6 @@ function DashboardChatPageContent() {
     return () => {
       isDisposed = true
       eventSource.close()
-      if (rafIdRef.current !== null) {
-        cancelAnimationFrame(rafIdRef.current)
-        rafIdRef.current = null
-      }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId])
@@ -428,6 +412,17 @@ function DashboardChatPageContent() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, session?.status])
+
+  // Scroll to the bottom once when a session first loads so the latest message is visible.
+  useEffect(() => {
+    if (!session || session.session_id !== sessionId) return
+    if (initialScrollDoneRef.current === sessionId) return
+    initialScrollDoneRef.current = sessionId
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => scrollThreadToBottom("instant"))
+    })
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, sessionId])
 
   useEffect(() => {
     if (!session || session.session_id !== sessionId) return
@@ -535,6 +530,16 @@ function DashboardChatPageContent() {
       !isSending,
   )
   const latestAssistantMessageId = latestAssistantMessageIdRef.current
+  const chatName = useMemo(() => {
+    if (!effectiveSession) return "New Chat"
+    for (let index = effectiveSession.messages.length - 1; index >= 0; index -= 1) {
+      const message = effectiveSession.messages[index]
+      if (message.sender_role !== "user") continue
+      const normalized = message.content_text.replace(/\s+/g, " ").trim()
+      if (normalized) return normalized
+    }
+    return "New Chat"
+  }, [effectiveSession])
 
   async function handleRegenerateGuide() {
     if (!sessionId || !effectiveSession || isRegenerating) return
@@ -652,6 +657,20 @@ function DashboardChatPageContent() {
       transition={reduceMotion ? undefined : { duration: 0.45, ease: EASE_OUT }}
       className="flex h-[calc(100dvh-7.75rem)] min-h-[480px] w-full flex-col gap-2 md:min-h-[560px]"
     >
+      <Breadcrumb>
+        <BreadcrumbList>
+          <BreadcrumbItem>
+            <BreadcrumbLink asChild>
+              <Link href="/dashboard/chat">Chats</Link>
+            </BreadcrumbLink>
+          </BreadcrumbItem>
+          <BreadcrumbSeparator />
+          <BreadcrumbItem>
+            <BreadcrumbPage className="max-w-[32ch] truncate">{chatName}</BreadcrumbPage>
+          </BreadcrumbItem>
+        </BreadcrumbList>
+      </Breadcrumb>
+
       <motion.div
         initial={reduceMotion ? false : { opacity: 0, y: 8 }}
         animate={reduceMotion ? undefined : { opacity: 1, y: 0 }}

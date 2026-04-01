@@ -84,10 +84,7 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
 
   const assistantVisibleText = assistantThinkState?.visibleMarkdown.trim() || ""
   const deferredAssistantText = useDeferredValue(assistantVisibleText)
-  const streamingTail =
-    isLatestStreamingAssistant && deferredAssistantText !== assistantVisibleText
-      ? assistantVisibleText.slice(deferredAssistantText.length)
-      : ""
+  const tailText = assistantVisibleText.slice(deferredAssistantText.length)
   const assistantThinkingCount = Math.max(
     assistantThinkState?.thinkBlockCount ?? 0,
     assistantThinkState?.isThinking ? 1 : 0,
@@ -105,8 +102,8 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
       transition={reduceMotion ? undefined : { duration: 0.24, ease: EASE_OUT }}
       className={
         message.sender_role === "user"
-          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-left text-[15px] text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%] [contain-intrinsic-size:auto_80px] [content-visibility:auto]"
-          : "mx-auto w-full max-w-4xl px-1 py-1 text-left text-[15px] [contain-intrinsic-size:auto_200px] [content-visibility:auto]"
+          ? "ml-auto w-fit max-w-[85%] break-words rounded-2xl border border-zinc-500/70 bg-zinc-700/85 px-3 py-2 text-left text-[15px] text-zinc-50 shadow-sm sm:max-w-[75%] lg:max-w-[65%]"
+          : "mx-auto w-full max-w-4xl px-1 py-1 text-left text-[15px]"
       }
     >
       {message.sender_role === "assistant" ? (
@@ -124,11 +121,10 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
               <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={MARKDOWN_COMPONENTS}>
                 {deferredAssistantText}
               </ReactMarkdown>
-              {streamingTail ? (
-                <span className="whitespace-pre-wrap font-light">{streamingTail}</span>
-              ) : null}
-              {isLatestStreamingAssistant ? (
-                <span aria-hidden="true" className="streaming-cursor">▮</span>
+              {tailText ? (
+                <span key={deferredAssistantText.length} className="whitespace-pre-wrap font-light stream-chunk-in">
+                  {tailText}
+                </span>
               ) : null}
             </div>
           ) : null}
