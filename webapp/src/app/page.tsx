@@ -93,7 +93,7 @@ export default function LandingPage() {
             <Link href="/signup">
               <Button
                 size="sm"
-                className="bg-brand-blue text-primary-foreground shadow-sm shadow-brand-blue/30 hover:bg-brand-blue/90"
+                className="bg-brand-blue text-white shadow-sm shadow-brand-blue/30 hover:bg-brand-blue/90 hover:text-white"
               >
                 Get Started
               </Button>
@@ -141,7 +141,7 @@ export default function LandingPage() {
               <Link href="/signup">
                 <Button
                   size="lg"
-                  className="bg-brand-blue px-6 text-primary-foreground shadow-md shadow-brand-blue/25 hover:bg-brand-blue/90"
+                  className="bg-brand-blue px-6 text-white shadow-md shadow-brand-blue/25 hover:bg-brand-blue/90 hover:text-white"
                 >
                   Get Started
                   <ArrowRight className="ml-1 h-4 w-4" />
