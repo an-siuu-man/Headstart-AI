@@ -53,6 +53,7 @@ type DbAssignmentSnapshotFile = {
   file_sha256: string;
   storage_path: string;
   byte_size?: number | null;
+  extracted_text?: string | null;
 };
 
 type DbStoredPdfBlob = {
@@ -686,6 +687,67 @@ export async function listSignedSnapshotPdfFiles(
       }),
     })),
   );
+}
+
+/**
+ * Persist extracted PDF text for each snapshot file.
+ * Called after initial guide generation with the per-file text returned by the agent service.
+ * Idempotent — safe to call multiple times for the same file.
+ */
+export async function persistSnapshotFilesExtractedText(
+  assignmentUuid: string,
+  entries: Array<{ fileSha256: string; extractedText: string }>,
+): Promise<void> {
+  if (entries.length === 0) return;
+
+  const ingest = await getAssignmentIngestByAssignmentUuid(assignmentUuid);
+  if (!ingest) return;
+
+  await Promise.allSettled(
+    entries.map((entry) =>
+      supabaseTableRequest<null>({
+        table: "assignment_snapshot_files",
+        method: "PATCH",
+        query: {
+          assignment_snapshot_id: eq(ingest.assignment_snapshot_id),
+          file_sha256: eq(entry.fileSha256),
+        },
+        headers: { Prefer: "return=minimal" },
+        body: { extracted_text: entry.extractedText },
+      }),
+    ),
+  );
+}
+
+/**
+ * Retrieve stored extracted PDF text for all snapshot files linked to an assignment.
+ * Returns a combined string in the same format used by the agent service,
+ * or an empty string when no stored text exists (legacy sessions, non-PDF files).
+ */
+export async function getSnapshotFilesExtractedText(
+  assignmentUuid: string,
+): Promise<string> {
+  const ingest = await getAssignmentIngestByAssignmentUuid(assignmentUuid);
+  if (!ingest) return "";
+
+  const rows = await selectMany<DbAssignmentSnapshotFile>({
+    table: "assignment_snapshot_files",
+    query: {
+      assignment_snapshot_id: eq(ingest.assignment_snapshot_id),
+      extracted_text: "not.is.null",
+      select: "filename,extracted_text",
+      order: "created_at.asc",
+    },
+  });
+
+  const parts = rows
+    .filter((r) => r.extracted_text)
+    .map((r) => {
+      const safeName = r.filename.replace(/"/g, "'");
+      return `<attachment name="${safeName}" source="assignment">\n${r.extracted_text}\n</attachment>`;
+    });
+
+  return parts.join("\n\n");
 }
 
 async function deleteStoredBlobIfUnreferenced(input: {

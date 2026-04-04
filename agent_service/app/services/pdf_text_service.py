@@ -835,12 +835,45 @@ def _maybe_dump_pdf_text(parts: list[str]) -> None:
         logger.warning("Failed to write PDF debug dump to %r: %s", dump_dir, e)
 
 
+def format_attachment_block(filename: str, source: str, text: str) -> str:
+    """
+    Wrap extracted PDF text in a structured block so the LLM can identify
+    each file by name and distinguish assignment files from user uploads.
+
+    Format:
+        <attachment name="filename.pdf" source="assignment|user_upload">
+        ...extracted text...
+        </attachment>
+    """
+    safe_name = filename.replace('"', "'")
+    safe_source = source.replace('"', "'")
+    return f'<attachment name="{safe_name}" source="{safe_source}">\n{text}\n</attachment>'
+
+
 def extract_pdf_context(req: RunAgentRequest) -> tuple[str, list[dict]]:
     """
     Build combined PDF text and visual-emphasis signals from request attachments.
     """
+    combined_text, visual_signals, _ = extract_pdf_context_with_file_texts(req)
+    return combined_text, visual_signals
+
+
+def extract_pdf_context_with_file_texts(
+    req: RunAgentRequest,
+) -> tuple[str, list[dict], dict[str, str]]:
+    """
+    Build combined PDF text and visual-emphasis signals from request attachments,
+    and also return a per-file mapping of file_sha256 → extracted_text for
+    persistence back to the database.
+
+    Returns:
+        (combined_pdf_text, visual_signals, {file_sha256: extracted_text})
+        The third value only contains entries where file_sha256 is non-empty and
+        extraction produced usable text.
+    """
     parts = []
     visual_signals = []
+    file_texts_by_sha256: dict[str, str] = {}
 
     if req.pdf_text:
         parts.append(req.pdf_text)
@@ -869,7 +902,9 @@ def extract_pdf_context(req: RunAgentRequest) -> tuple[str, list[dict]]:
         text, file_signals = extract_pdf_context_from_pdf_bytes(pdf_bytes, pdf_file.filename)
         if text:
             logger.info("PDF %r preview: %r", pdf_file.filename, text[:200])
-            parts.append(f"--- File: {pdf_file.filename} ---\n{text}")
+            parts.append(format_attachment_block(pdf_file.filename, "assignment", text))
+            if pdf_file.file_sha256:
+                file_texts_by_sha256[pdf_file.file_sha256] = text
         if file_signals:
             visual_signals.extend(file_signals)
 
@@ -877,7 +912,7 @@ def extract_pdf_context(req: RunAgentRequest) -> tuple[str, list[dict]]:
 
     _maybe_dump_pdf_text(parts)
 
-    return "\n\n".join(parts), visual_signals
+    return "\n\n".join(parts), visual_signals, file_texts_by_sha256
 
 
 def extract_all_pdf_text(req: RunAgentRequest) -> str:
@@ -927,6 +962,6 @@ def extract_text_from_pdf_files(pdf_files) -> str:
 
         text, _ = extract_pdf_context_from_pdf_bytes(pdf_bytes, pdf_file.filename)
         if text:
-            parts.append(f"--- {pdf_file.filename} ---\n{text}")
+            parts.append(format_attachment_block(pdf_file.filename, "user_upload", text))
 
     return "\n\n".join(parts)

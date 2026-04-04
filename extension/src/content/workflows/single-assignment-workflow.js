@@ -21,6 +21,7 @@
 import { MESSAGE_TYPES } from "../../shared/contracts/messages.js";
 import { createLogger } from "../../shared/logger.js";
 import { extractAssignmentData } from "../extractors/assignment-extractor.js";
+import { fetchModuleResources } from "../extractors/modules-extractor.js";
 import { injectWidget } from "../injectors/widget-injector.js";
 
 const log = createLogger("SingleFlow");
@@ -39,7 +40,16 @@ export async function runSingleAssignmentFlow(pageInfo, courseName) {
     },
   });
 
-  const assignmentData = await extractAssignmentData(document, pageInfo);
+  const [
+    assignmentData,
+    { resources: moduleResources, meta: moduleResourcesMeta },
+  ] = await Promise.all([
+    extractAssignmentData(document, pageInfo),
+    fetchModuleResources(pageInfo.courseId, pageInfo.assignmentId),
+  ]);
+
+  assignmentData.moduleResources = moduleResources;
+  assignmentData.moduleResourcesMeta = moduleResourcesMeta;
 
   log.info(
     "Extracted assignment data:",
@@ -49,6 +59,7 @@ export async function runSingleAssignmentFlow(pageInfo, courseName) {
     `| rubric=${assignmentData.rubric ? assignmentData.rubric.criteria?.length + " criteria" : "none"}`,
     `| descLen=${assignmentData.descriptionText?.length ?? 0}`,
     `| pdfs=${assignmentData.pdfAttachments?.length ?? 0}`,
+    `| modules=${moduleResources.length}`,
   );
   log.debug("Full extracted data:", assignmentData);
 

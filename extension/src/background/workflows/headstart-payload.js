@@ -64,5 +64,7 @@ export function buildHeadstartPayload(stored) {
     rubric: source?.rubric ?? null,
     pdfs: source?.pdfs ?? [],
     pdfAttachments: source?.pdfAttachments ?? stored?.pdfAttachments ?? [],
+    moduleResources: source?.moduleResources ?? stored?.moduleResources ?? [],
+    moduleResourcesMeta: source?.moduleResourcesMeta ?? stored?.moduleResourcesMeta ?? null,
   };
 }

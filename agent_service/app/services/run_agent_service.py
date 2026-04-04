@@ -26,7 +26,7 @@ from typing import Generator
 from ..core.logging import get_logger
 from ..schemas.requests import ChatStreamRequest, RunAgentRequest
 from ..schemas.responses import ChatCompletionResponse, RunAgentResponse
-from .pdf_text_service import extract_pdf_context, extract_text_from_pdf_files
+from .pdf_text_service import extract_pdf_context, extract_pdf_context_with_file_texts, extract_text_from_pdf_files
 
 logger = get_logger("headstart.main")
 
@@ -57,6 +57,7 @@ def _stream_headstart_chat_answer(
     user_message: str,
     include_thinking: bool = False,
     calendar_context: dict | None = None,
+    assignment_pdf_text: str = "",
     user_attachments_context: str = "",
 ):
     """Lazy import to avoid loading LLM dependencies at module import time."""
@@ -70,6 +71,7 @@ def _stream_headstart_chat_answer(
         user_message=user_message,
         include_thinking=include_thinking,
         calendar_context=calendar_context,
+        assignment_pdf_text=assignment_pdf_text,
         user_attachments_context=user_attachments_context,
     )
 
@@ -199,11 +201,13 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
                 "status_message": "Extracting PDF context",
             },
         )
-        pdf_text, visual_signals = extract_pdf_context(req)
+        pdf_text, visual_signals, file_texts_by_sha256 = extract_pdf_context_with_file_texts(req)
         if pdf_text:
             logger.info("Combined PDF text: %d chars", len(pdf_text))
         if visual_signals:
             logger.info("Extracted visual signals: %d", len(visual_signals))
+        if file_texts_by_sha256:
+            logger.info("Per-file extracted texts: %d file(s)", len(file_texts_by_sha256))
 
         yield _build_event(
             "run.stage",
@@ -282,6 +286,12 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
         thinking_content = "".join(reasoning_chunks).strip()
         if thinking_content:
             completed_payload["thinking_content"] = thinking_content
+        if file_texts_by_sha256:
+            completed_payload["pdf_file_texts"] = [
+                {"file_sha256": sha, "extracted_text": text}
+                for sha, text in file_texts_by_sha256.items()
+                if text
+            ]
         yield _build_event("run.completed", completed_payload)
     except Exception as exc:
         logger.exception("Streaming run failed")
@@ -348,6 +358,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             user_message=req.user_message,
             include_thinking=req.thinking_mode,
             calendar_context=req.calendar_context.model_dump() if req.calendar_context else None,
+            assignment_pdf_text=req.assignment_pdf_text or "",
             user_attachments_context=user_attachments_context,
         ):
             delta, reasoning_delta = _split_stream_chunk(chunk)

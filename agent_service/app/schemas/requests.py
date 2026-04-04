@@ -98,4 +98,5 @@ class ChatStreamRequest(BaseModel):
     user_message: str
     thinking_mode: bool = False
     calendar_context: Optional[CalendarContext] = None
+    assignment_pdf_text: Optional[str] = ""
     user_pdf_files: Optional[List[PdfFile]] = Field(default_factory=list)

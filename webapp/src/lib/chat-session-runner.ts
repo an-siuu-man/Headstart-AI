@@ -12,8 +12,10 @@ import {
 import {
   getHighestMessageIndex,
   getSessionGuideAndRecentHistory,
+  getSnapshotFilesExtractedText,
   insertGuideVersion,
   listSignedSnapshotPdfFiles,
+  persistSnapshotFilesExtractedText,
   updateChatMessageContent,
   updateChatSessionStatus,
 } from "@/lib/chat-repository";
@@ -385,6 +387,21 @@ async function runInitialGuide(input: {
           console.error("[chat-runner] Failed to persist guide v1:", err);
         });
 
+        // Persist per-file extracted PDF texts so follow-up chat can reuse them
+        // without re-downloading and re-extracting on every message (best-effort).
+        const pdfFileTexts = Array.isArray(data.pdf_file_texts) ? data.pdf_file_texts : [];
+        if (pdfFileTexts.length > 0) {
+          persistSnapshotFilesExtractedText(
+            assignmentUuid,
+            (pdfFileTexts as Array<{ file_sha256: string; extracted_text: string }>).map((e) => ({
+              fileSha256: e.file_sha256,
+              extractedText: e.extracted_text,
+            })),
+          ).catch((err: unknown) => {
+            console.error("[chat-runner] Failed to persist PDF extracted texts:", err);
+          });
+        }
+
         hasCompleted = true;
         break;
       }
@@ -582,17 +599,40 @@ async function runFollowupChat(input: {
       }
     }
 
+    // Use stored extracted text when available (fast path — no re-download or re-extraction).
+    // Fall back to re-downloading via signed URLs for legacy sessions that predate text storage.
+    const storedAssignmentPdfText = await getSnapshotFilesExtractedText(
+      sessionContext.assignmentUuid,
+    );
+
+    let snapshotPdfFilesForFallback: Array<{
+      filename: string;
+      storage_url: string;
+      file_sha256: string;
+    }> = [];
+    if (!storedAssignmentPdfText) {
+      const snapshotPdfFiles = await listSignedSnapshotPdfFiles(sessionContext.assignmentUuid);
+      snapshotPdfFilesForFallback = snapshotPdfFiles.map((f) => ({
+        filename: f.filename,
+        storage_url: f.signedUrl,
+        file_sha256: f.fileSha256,
+      }));
+    }
+
+    const allPdfFiles = [...snapshotPdfFilesForFallback, ...userPdfFiles];
+
     const streamResponse = await openAgentChatStream(
       agentUrl,
       JSON.stringify({
         assignment_payload: assignmentPayload,
+        assignment_pdf_text: storedAssignmentPdfText || "",
         guide_markdown: sessionContext.guideMarkdown,
         chat_history: chatHistory,
         retrieval_context: retrievalContext,
         user_message: userMessageContent,
         thinking_mode: false,
         calendar_context: calendarContext,
-        ...(userPdfFiles.length > 0 ? { user_pdf_files: userPdfFiles } : {}),
+        ...(allPdfFiles.length > 0 ? { user_pdf_files: allPdfFiles } : {}),
       }),
     );
 

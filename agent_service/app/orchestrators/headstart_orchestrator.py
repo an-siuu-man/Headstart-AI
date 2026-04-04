@@ -35,14 +35,13 @@ from ..core.logging import get_logger
 from ..schemas.responses import RunAgentResponse
 
 logger = get_logger("headstart.agent")
-# llama-3.3-70b model isn't able to read OCR text from PDFs well
-MODEL_NAME = "nvidia/nemotron-3-nano-30b-a3b"
+MODEL_NAME = "nvidia/nemotron-3-super-120b-a12b"
 TEMPERATURE = 1
 TOP_P = 0.95
-MAX_OUTPUT_TOKENS = 65536
+MAX_OUTPUT_TOKENS = 16384
+REASONING_BUDGET = 16384
 FREQUENCY_PENALTY = 0
 PRESENCE_PENALTY = 0
-THINKING_MODE_ENABLED = True
 MAX_RETRIES = 2
 
 SYSTEM_PROMPT = """\
@@ -106,7 +105,7 @@ Student's timezone: {timezone}
 Visual emphasis context (high/medium significance markers from PDF annotations/styles):
 {visual_signals}
 
-Attached file contents (may be empty):
+Attached files — each block is tagged with name and source="assignment":
 {pdf_text}\
 """
 
@@ -216,14 +215,11 @@ def _compute_stream_delta(new_text: str, existing_text: str) -> tuple[str, str]:
     return new_text, f"{existing_text}{new_text}"
 
 
-def _request_kwargs(include_thinking: bool = False) -> dict[str, Any]:
-    kwargs: dict[str, Any] = {
+def _request_kwargs() -> dict[str, Any]:
+    return {
         "frequency_penalty": FREQUENCY_PENALTY,
         "presence_penalty": PRESENCE_PENALTY,
     }
-    if include_thinking:
-        kwargs["thinking_mode"] = THINKING_MODE_ENABLED
-    return kwargs
 
 
 def _stream_message_deltas(
@@ -234,7 +230,7 @@ def _stream_message_deltas(
     """Yield both answer deltas and reasoning deltas from provider streaming."""
     seen_content = ""
     seen_reasoning = ""
-    for chunk in llm.stream(messages, **_request_kwargs(include_thinking=include_thinking)):
+    for chunk in llm.stream(messages, **_request_kwargs()):
         content_delta, seen_content = _compute_stream_delta(_to_text(chunk), seen_content)
         reasoning_delta, seen_reasoning = _compute_stream_delta(
             _extract_reasoning_content(chunk),
@@ -479,6 +475,7 @@ def run_headstart_agent(payload: dict, pdf_text: str = "", visual_signals: Optio
         temperature=TEMPERATURE,
         max_tokens=MAX_OUTPUT_TOKENS,
         top_p=TOP_P,
+        reasoning_budget=REASONING_BUDGET,
     )
 
     payload_str = json.dumps(payload, ensure_ascii=False)
@@ -565,6 +562,7 @@ def stream_headstart_agent_markdown(
         temperature=TEMPERATURE,
         max_tokens=MAX_OUTPUT_TOKENS,
         top_p=TOP_P,
+        reasoning_budget=REASONING_BUDGET,
     )
     prompt = _build_markdown_prompt()
 
@@ -600,7 +598,7 @@ def stream_headstart_agent_markdown(
         return
 
     logger.info("Using single invoke markdown fallback")
-    result = llm.invoke(messages, **_request_kwargs(include_thinking=True))
+    result = llm.invoke(messages, **_request_kwargs())
     markdown = _extract_markdown_payload(_to_text(result))
     reasoning = _extract_reasoning_content(result).strip()
     if not markdown:
@@ -654,10 +652,20 @@ say so explicitly rather than guessing.
 - If the student asks you to "just give the answer", "write it for me", or similar, decline
   politely and redirect them toward understanding the problem themselves.
 
+## Attached File Format
+Attached files arrive in structured blocks:
+  <attachment name="filename.pdf" source="assignment|user_upload">
+  ...extracted text...
+  </attachment>
+- `source="assignment"` — original instructor files from Canvas (authoritative requirements).
+- `source="user_upload"` — files the student uploaded during this chat session (attempts, notes).
+When a student asks about a specific file, refer to it by its `name` attribute.
+When a student asks "what files are attached?", list the `name` of every block present.
+
 ## Question Access and Answer-Checking Policy
 - You ARE allowed to share assignment question details from the provided context.
 - If the student asks for exact question text, quote it verbatim from the context (payload, guide,
-  retrieval snippets, or user-attached files) whenever it is available.
+  retrieval snippets, or attached files with source="assignment") whenever it is available.
 - If the student asks for all questions or subparts, enumerate every one present in the context
   and preserve original numbering and labels.
 - You ARE allowed to review and critique a student's attempt submitted via chat or attached file.
@@ -735,7 +743,9 @@ Generated assignment guide (reference draft, may need major changes):
 Retrieved context snippets:
 {retrieval_context}
 
-User-attached files (may include student solution attempts and question text):
+Attached files — each block is tagged <attachment name="..." source="assignment|user_upload">:
+{assignment_pdf_text}
+
 {user_attachments_context}
 
 Calendar context (free slots):
@@ -748,6 +758,7 @@ MAX_CHAT_HISTORY_CHARS = 12000
 MAX_CHAT_RETRIEVAL_CHARS = 12000
 MAX_CHAT_USER_MESSAGE_CHARS = 4000
 MAX_CHAT_CALENDAR_CHARS = 4000
+MAX_CHAT_ASSIGNMENT_PDF_CHARS = 32000
 MAX_CHAT_USER_ATTACHMENTS_CHARS = 24000
 MAX_CHAT_FIELD_CHARS = 2200
 MAX_CHAT_ARRAY_ITEMS = 20
@@ -971,6 +982,7 @@ def stream_headstart_chat_answer(
     user_message: str = "",
     include_thinking: bool = False,
     calendar_context: Optional[dict] = None,
+    assignment_pdf_text: str = "",
     user_attachments_context: str = "",
 ) -> Iterator[dict[str, str]]:
     """
@@ -994,6 +1006,7 @@ def stream_headstart_chat_answer(
         temperature=TEMPERATURE,
         max_tokens=MAX_OUTPUT_TOKENS,
         top_p=TOP_P,
+        reasoning_budget=REASONING_BUDGET,
     )
     prompt = _build_followup_chat_prompt()
 
@@ -1021,19 +1034,25 @@ def stream_headstart_chat_answer(
 
     calendar_context_str = _format_calendar_context_for_prompt(calendar_context)
 
+    assignment_pdf_str = _truncate_for_chat(
+        assignment_pdf_text or "(no assignment files)",
+        MAX_CHAT_ASSIGNMENT_PDF_CHARS,
+    )
+
     user_attachments_str = _truncate_for_chat(
         user_attachments_context or "(no user-attached files)",
         MAX_CHAT_USER_ATTACHMENTS_CHARS,
     )
 
     logger.info(
-        "Follow-up context sizes | payload=%d guide=%d history=%d retrieval=%d user=%d calendar=%d attachments=%d",
+        "Follow-up context sizes | payload=%d guide=%d history=%d retrieval=%d user=%d calendar=%d assignment_pdf=%d attachments=%d",
         len(payload_str),
         len(guide_markdown_str),
         len(chat_history_str),
         len(retrieval_context_str),
         len(user_message_str),
         len(calendar_context_str),
+        len(assignment_pdf_str),
         len(user_attachments_str),
     )
 
@@ -1041,6 +1060,7 @@ def stream_headstart_chat_answer(
         payload=payload_str,
         guide_markdown=guide_markdown_str,
         retrieval_context=retrieval_context_str,
+        assignment_pdf_text=assignment_pdf_str,
         user_attachments_context=user_attachments_str,
         chat_history=chat_history_str,
         calendar_context=calendar_context_str,
@@ -1071,7 +1091,7 @@ def stream_headstart_chat_answer(
         return
 
     logger.info("Using single invoke follow-up chat fallback")
-    result = llm.invoke(messages, **_request_kwargs(include_thinking=include_thinking))
+    result = llm.invoke(messages, **_request_kwargs())
     content = _extract_markdown_payload(_to_text(result))
     reasoning = _extract_reasoning_content(result).strip()
     if not content:

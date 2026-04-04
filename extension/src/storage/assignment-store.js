@@ -72,6 +72,8 @@ export async function mergeExtractedAssignment(payload, tabUrl) {
     userTimezone: data?.userTimezone ?? previous.userTimezone ?? null,
     pdfs: data?.pdfs ?? previous.pdfs ?? [],
     pdfAttachments: data?.pdfAttachments ?? previous.pdfAttachments ?? [],
+    moduleResources: data?.moduleResources ?? previous.moduleResources ?? [],
+    moduleResourcesMeta: data?.moduleResourcesMeta ?? previous.moduleResourcesMeta ?? null,
   };
 
   await chrome.storage.local.set({ [key]: next });
