@@ -4,6 +4,7 @@ python-dotenv
 pydantic
 langchain
 langchain-nvidia-ai-endpoints
+docling
 pymupdf
 pillow
 pytesseract

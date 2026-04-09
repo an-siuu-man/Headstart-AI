@@ -9,7 +9,7 @@ Revised:
 Preconditions:
 - Incoming request body conforms to RunAgentRequest schema.
 Inputs:
-- Acceptable: POST body containing payload and optional pdf_text/pdf_files.
+- Acceptable: POST body containing payload plus optional structured pdf_extractions/pdf_files.
 - Unacceptable: Invalid schema payloads or malformed JSON bodies.
 Postconditions:
 - Executes run-agent workflow and returns a markdown guide response.

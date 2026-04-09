@@ -23,14 +23,16 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .shared import PdfFile
+from .shared import PdfExtraction, PdfFile
 
 
 class RunAgentRequest(BaseModel):
     assignment_uuid: Optional[str] = None
     payload: Dict[str, Any]
+    pdf_extractions: Optional[List[PdfExtraction]] = Field(default_factory=list)
+    pdf_files: Optional[List[PdfFile]] = Field(default_factory=list)
+    # Backward-compatible legacy field (deprecated, ignored when structured extractions exist).
     pdf_text: Optional[str] = ""
-    pdf_files: Optional[List[PdfFile]] = []
 
 
 class ChatHistoryMessage(BaseModel):
@@ -98,5 +100,6 @@ class ChatStreamRequest(BaseModel):
     user_message: str
     thinking_mode: bool = False
     calendar_context: Optional[CalendarContext] = None
+    assignment_pdf_extractions: Optional[List[PdfExtraction]] = Field(default_factory=list)
     assignment_pdf_text: Optional[str] = ""
     user_pdf_files: Optional[List[PdfFile]] = Field(default_factory=list)

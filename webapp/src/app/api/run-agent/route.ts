@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
-  const body = await req.json(); // expects { assignment_uuid, payload, pdf_text? }
+  const body = await req.json(); // expects { assignment_uuid, payload, pdf_extractions?, pdf_files? }
 
   const { assignment_uuid, payload } = body;
   const title = payload?.title ?? "(no title)";

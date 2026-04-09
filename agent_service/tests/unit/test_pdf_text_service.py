@@ -71,7 +71,8 @@ class TestPdfTextService(unittest.TestCase):
             out = extract_all_pdf_text(req)
 
         self.assertIn("legacy context", out)
-        self.assertIn("--- File: spec.pdf ---\n--- Page 1 (native) ---", out)
+        self.assertIn('<attachment name="spec.pdf" source="assignment">', out)
+        self.assertIn("--- Page 1 (native) ---", out)
 
     def test_extract_pdf_context_returns_visual_signals(self):
         req = RunAgentRequest(
@@ -102,7 +103,7 @@ class TestPdfTextService(unittest.TestCase):
         ):
             text, signals = extract_pdf_context(req)
 
-        self.assertIn("--- File: spec.pdf ---", text)
+        self.assertIn('<attachment name="spec.pdf" source="assignment">', text)
         self.assertEqual(signals, sample_signals)
 
     def test_choose_page_text_variant_prefers_ocr_when_native_is_noise(self):
@@ -153,7 +154,7 @@ class TestPdfTextService(unittest.TestCase):
         ):
             text, signals = extract_pdf_context(req)
 
-        self.assertIn("--- File: spec.pdf ---", text)
+        self.assertIn('<attachment name="spec.pdf" source="assignment">', text)
         self.assertEqual(signals, [])
         mock_download.assert_called_once_with(
             "https://example.invalid/signed-url",

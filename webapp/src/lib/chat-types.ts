@@ -6,6 +6,62 @@ export type PdfAttachment = {
   storagePath?: string;
 };
 
+export type PdfTextStyle = {
+  bold?: boolean;
+  italic?: boolean;
+  underline?: boolean;
+  strikethrough?: boolean;
+};
+
+export type PdfTextBlock = {
+  block_id: string;
+  text: string;
+  role?: string;
+  page_number?: number;
+  source?: "docling" | "native" | "reconciled";
+  reading_order?: number;
+  confidence?: number;
+  bbox?: number[] | null;
+  formatting?: PdfTextStyle | null;
+};
+
+export type PdfVisualSignal = {
+  file: string;
+  page: number;
+  text: string;
+  signal_types: string[];
+  score: number;
+  significance: "high" | "medium" | "low";
+  source: string;
+};
+
+export type PdfPageExtraction = {
+  page_number: number;
+  text: string;
+  method: string;
+  blocks: PdfTextBlock[];
+  confidence: number;
+};
+
+export type PdfExtractionQuality = {
+  strategy: string;
+  docling_available: boolean;
+  native_chars: number;
+  docling_chars: number;
+  reconciled_chars: number;
+  notes: string[];
+};
+
+export type PdfExtraction = {
+  filename: string;
+  source: "assignment" | "user_upload";
+  file_sha256?: string | null;
+  full_text: string;
+  pages: PdfPageExtraction[];
+  visual_signals: PdfVisualSignal[];
+  quality?: PdfExtractionQuality | null;
+};
+
 export type AssignmentPayload = Record<string, unknown> & {
   title?: string;
   courseName?: string;

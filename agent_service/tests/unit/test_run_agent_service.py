@@ -27,9 +27,15 @@ class TestRunAgentService(unittest.TestCase):
         visual_signals = [{"file": "spec.pdf", "page": 1, "text": "Q1", "signal_types": ["highlight"]}]
 
         with patch(
-            "app.services.run_agent_service.extract_pdf_context",
-            return_value=("pdf context", visual_signals),
+            "app.services.run_agent_service.extract_pdf_extractions_with_file_map",
+            return_value=([], {}),
         ) as mock_extract, patch(
+            "app.services.run_agent_service.format_pdf_extractions_for_prompt",
+            return_value="pdf context",
+        ), patch(
+            "app.services.run_agent_service.collect_visual_signals_from_extractions",
+            return_value=visual_signals,
+        ), patch(
             "app.services.run_agent_service._run_headstart_agent",
             return_value=SAMPLE_RESULT,
         ) as mock_agent:
@@ -43,9 +49,15 @@ class TestRunAgentService(unittest.TestCase):
         req = self._build_request()
 
         with patch(
-            "app.services.run_agent_service.extract_pdf_context",
-            return_value=("", []),
+            "app.services.run_agent_service.extract_pdf_extractions_with_file_map",
+            return_value=([], {}),
         ) as mock_extract, patch(
+            "app.services.run_agent_service.format_pdf_extractions_for_prompt",
+            return_value="",
+        ), patch(
+            "app.services.run_agent_service.collect_visual_signals_from_extractions",
+            return_value=[],
+        ), patch(
             "app.services.run_agent_service._run_headstart_agent",
             return_value=SAMPLE_RESULT,
         ) as mock_agent:
@@ -59,8 +71,14 @@ class TestRunAgentService(unittest.TestCase):
         req = self._build_request()
 
         with patch(
-            "app.services.run_agent_service.extract_pdf_context",
-            return_value=("", []),
+            "app.services.run_agent_service.extract_pdf_extractions_with_file_map",
+            return_value=([], {}),
+        ), patch(
+            "app.services.run_agent_service.format_pdf_extractions_for_prompt",
+            return_value="",
+        ), patch(
+            "app.services.run_agent_service.collect_visual_signals_from_extractions",
+            return_value=[],
         ), patch(
             "app.services.run_agent_service._stream_headstart_agent_markdown",
             return_value=iter(
@@ -123,6 +141,7 @@ class TestRunAgentService(unittest.TestCase):
             user_message="What should I do first?",
             include_thinking=False,
             calendar_context=None,
+            assignment_pdf_text="",
             user_attachments_context="",
         )
 
@@ -167,6 +186,7 @@ class TestRunAgentService(unittest.TestCase):
             user_message="Use thinking mode",
             include_thinking=True,
             calendar_context=None,
+            assignment_pdf_text="",
             user_attachments_context="",
         )
 
@@ -256,6 +276,7 @@ class TestRunAgentService(unittest.TestCase):
                     }
                 ],
             },
+            assignment_pdf_text="",
             user_attachments_context="",
         )
 

@@ -12,16 +12,17 @@ import {
 import {
   getHighestMessageIndex,
   getSessionGuideAndRecentHistory,
+  getSnapshotFilesExtractedExtractions,
   getSnapshotFilesExtractedText,
   insertGuideVersion,
   listSignedSnapshotPdfFiles,
-  persistSnapshotFilesExtractedText,
+  persistSnapshotFileExtractions,
   updateChatMessageContent,
   updateChatSessionStatus,
 } from "@/lib/chat-repository";
 import { supabaseStorageCreateSignedUrl } from "@/lib/supabase-rest";
 import { getSharedAssignmentCalendarContextForChat } from "@/lib/assignment-calendar-context";
-import { type AssignmentPayload } from "@/lib/chat-types";
+import { type AssignmentPayload, type PdfExtraction } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
 import { toOptionalString } from "@/lib/utils";
 import { retrieveLexicalContext } from "@/lib/rag/lexical-retriever";
@@ -311,7 +312,7 @@ async function runInitialGuide(input: {
         ...payloadWithoutPdfs,
         assignment_uuid: assignmentUuid,
       },
-      pdf_text: "",
+      pdf_extractions: [],
       pdf_files: pdfFiles,
     });
 
@@ -389,17 +390,60 @@ async function runInitialGuide(input: {
 
         // Persist per-file extracted PDF texts so follow-up chat can reuse them
         // without re-downloading and re-extracting on every message (best-effort).
-        const pdfFileTexts = Array.isArray(data.pdf_file_texts) ? data.pdf_file_texts : [];
-        if (pdfFileTexts.length > 0) {
-          persistSnapshotFilesExtractedText(
+        const pdfFileExtractions = Array.isArray(data.pdf_file_extractions)
+          ? data.pdf_file_extractions
+          : [];
+        if (pdfFileExtractions.length > 0) {
+          persistSnapshotFileExtractions(
             assignmentUuid,
-            (pdfFileTexts as Array<{ file_sha256: string; extracted_text: string }>).map((e) => ({
-              fileSha256: e.file_sha256,
-              extractedText: e.extracted_text,
-            })),
+            (pdfFileExtractions as Array<{
+              file_sha256: string;
+              extraction?: PdfExtraction;
+              full_text?: string;
+            }>)
+              .filter((e) => typeof e.file_sha256 === "string" && e.file_sha256.trim().length > 0)
+              .map((e) => ({
+                fileSha256: e.file_sha256,
+                extraction:
+                  e.extraction && typeof e.extraction === "object"
+                    ? e.extraction
+                    : {
+                        filename: "unknown.pdf",
+                        source: "assignment",
+                        file_sha256: e.file_sha256,
+                        full_text: typeof e.full_text === "string" ? e.full_text : "",
+                        pages: [],
+                        visual_signals: [],
+                        quality: null,
+                      },
+              })),
           ).catch((err: unknown) => {
-            console.error("[chat-runner] Failed to persist PDF extracted texts:", err);
+            console.error("[chat-runner] Failed to persist structured PDF extractions:", err);
           });
+        } else {
+          // Legacy fallback for older agent payloads.
+          const pdfFileTexts = Array.isArray(data.pdf_file_texts) ? data.pdf_file_texts : [];
+          if (pdfFileTexts.length > 0) {
+            persistSnapshotFileExtractions(
+              assignmentUuid,
+              (pdfFileTexts as Array<{ file_sha256: string; extracted_text: string }>)
+                .filter((e) => typeof e.file_sha256 === "string" && e.file_sha256.trim().length > 0)
+                .map((e) => ({
+                  fileSha256: e.file_sha256,
+                  extraction: {
+                    filename: "unknown.pdf",
+                    source: "assignment",
+                    file_sha256: e.file_sha256,
+                    full_text: e.extracted_text || "",
+                    pages: [],
+                    visual_signals: [],
+                    quality: null,
+                  },
+                })),
+            ).catch((err: unknown) => {
+              console.error("[chat-runner] Failed to persist legacy PDF extracted texts:", err);
+            });
+          }
         }
 
         hasCompleted = true;
@@ -593,6 +637,9 @@ async function runFollowupChat(input: {
 
     // Use stored extracted text when available (fast path — no re-download or re-extraction).
     // Fall back to re-downloading via signed URLs for legacy sessions that predate text storage.
+    const storedAssignmentPdfExtractions = await getSnapshotFilesExtractedExtractions(
+      sessionContext.assignmentUuid,
+    );
     const storedAssignmentPdfText = await getSnapshotFilesExtractedText(
       sessionContext.assignmentUuid,
     );
@@ -632,6 +679,7 @@ async function runFollowupChat(input: {
       agentUrl,
       JSON.stringify({
         assignment_payload: assignmentPayload,
+        assignment_pdf_extractions: storedAssignmentPdfExtractions,
         assignment_pdf_text: pdfIsLong ? "" : pdfText,
         guide_markdown: sessionContext.guideMarkdown,
         chat_history: chatHistory,

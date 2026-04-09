@@ -26,7 +26,14 @@ from typing import Generator
 from ..core.logging import get_logger
 from ..schemas.requests import ChatStreamRequest, RunAgentRequest
 from ..schemas.responses import ChatCompletionResponse, RunAgentResponse
-from .pdf_text_service import extract_pdf_context, extract_pdf_context_with_file_texts, extract_text_from_pdf_files
+from ..schemas.shared import PdfExtraction, PdfExtractionQuality, PdfPageExtraction
+from .pdf_extraction_service import (
+    build_pdf_file_extraction_payload,
+    collect_visual_signals_from_extractions,
+    extract_pdf_extractions_from_pdf_files,
+    extract_pdf_extractions_with_file_map,
+    format_pdf_extractions_for_prompt,
+)
 
 logger = get_logger("headstart.main")
 
@@ -83,15 +90,17 @@ def run_agent_workflow(req: RunAgentRequest, route_path: str) -> dict:
     num_pdf_files = len(req.pdf_files or [])
 
     logger.info(
-        "POST %s | title=%r | courseId=%s | pdf_text_len=%d | pdf_files=%d",
+        "POST %s | title=%r | courseId=%s | pdf_extractions=%d | pdf_files=%d",
         route_path,
         title,
         course_id,
-        len(req.pdf_text or ""),
+        len(req.pdf_extractions),
         num_pdf_files,
     )
 
-    pdf_text, visual_signals = extract_pdf_context(req)
+    pdf_extractions, _ = extract_pdf_extractions_with_file_map(req)
+    pdf_text = format_pdf_extractions_for_prompt(pdf_extractions, source="assignment")
+    visual_signals = collect_visual_signals_from_extractions(pdf_extractions)
     if pdf_text:
         logger.info("Combined PDF text: %d chars", len(pdf_text))
     if visual_signals:
@@ -166,11 +175,11 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
     num_pdf_files = len(req.pdf_files or [])
 
     logger.info(
-        "POST %s [stream] | title=%r | courseId=%s | pdf_text_len=%d | pdf_files=%d",
+        "POST %s [stream] | title=%r | courseId=%s | pdf_extractions=%d | pdf_files=%d",
         route_path,
         title,
         course_id,
-        len(req.pdf_text or ""),
+        len(req.pdf_extractions),
         num_pdf_files,
     )
 
@@ -201,13 +210,15 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
                 "status_message": "Extracting PDF context",
             },
         )
-        pdf_text, visual_signals, file_texts_by_sha256 = extract_pdf_context_with_file_texts(req)
+        pdf_extractions, extractions_by_sha = extract_pdf_extractions_with_file_map(req)
+        pdf_text = format_pdf_extractions_for_prompt(pdf_extractions, source="assignment")
+        visual_signals = collect_visual_signals_from_extractions(pdf_extractions)
         if pdf_text:
             logger.info("Combined PDF text: %d chars", len(pdf_text))
         if visual_signals:
             logger.info("Extracted visual signals: %d", len(visual_signals))
-        if file_texts_by_sha256:
-            logger.info("Per-file extracted texts: %d file(s)", len(file_texts_by_sha256))
+        if extractions_by_sha:
+            logger.info("Per-file structured extractions: %d file(s)", len(extractions_by_sha))
 
         yield _build_event(
             "run.stage",
@@ -286,11 +297,17 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
         thinking_content = "".join(reasoning_chunks).strip()
         if thinking_content:
             completed_payload["thinking_content"] = thinking_content
-        if file_texts_by_sha256:
+        pdf_file_extractions = build_pdf_file_extraction_payload(extractions_by_sha)
+        if pdf_file_extractions:
+            completed_payload["pdf_file_extractions"] = pdf_file_extractions
+            # Backward-compatible legacy field for older clients.
             completed_payload["pdf_file_texts"] = [
-                {"file_sha256": sha, "extracted_text": text}
-                for sha, text in file_texts_by_sha256.items()
-                if text
+                {
+                    "file_sha256": item["file_sha256"],
+                    "extracted_text": item["full_text"],
+                }
+                for item in pdf_file_extractions
+                if item.get("full_text")
             ]
         yield _build_event("run.completed", completed_payload)
     except Exception as exc:
@@ -336,12 +353,51 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             },
         )
 
-        # Extract text from user-attached PDFs if provided
-        user_attachments_context = extract_text_from_pdf_files(req.user_pdf_files or [])
+        assignment_extractions: list[PdfExtraction] = list(req.assignment_pdf_extractions or [])
+        if not assignment_extractions and (req.assignment_pdf_text or "").strip():
+            legacy_text = (req.assignment_pdf_text or "").strip()
+            assignment_extractions = [
+                PdfExtraction(
+                    filename="legacy-assignment-pdf.txt",
+                    source="assignment",
+                    full_text=legacy_text,
+                    pages=[
+                        PdfPageExtraction(
+                            page_number=1,
+                            text=legacy_text,
+                            method="legacy-inline",
+                            confidence=1.0,
+                        )
+                    ],
+                    visual_signals=[],
+                    quality=PdfExtractionQuality(
+                        strategy="legacy_assignment_pdf_text",
+                        docling_available=False,
+                        native_chars=len(legacy_text),
+                        docling_chars=0,
+                        reconciled_chars=len(legacy_text),
+                        notes=["legacy_assignment_pdf_text_field"],
+                    ),
+                )
+            ]
+
+        user_extractions = extract_pdf_extractions_from_pdf_files(
+            req.user_pdf_files or [],
+            source="user_upload",
+        )
+        user_attachments_context = format_pdf_extractions_for_prompt(
+            user_extractions,
+            source="user_upload",
+        )
+        assignment_pdf_context = format_pdf_extractions_for_prompt(
+            assignment_extractions,
+            source="assignment",
+        )
         logger.info(
-            "User attachment extraction: %d files -> %d chars",
+            "User attachment extraction: %d files -> %d chars | assignment_extractions=%d",
             num_user_pdfs,
             len(user_attachments_context),
+            len(assignment_extractions),
         )
 
         chunks: list[str] = []
@@ -358,7 +414,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             user_message=req.user_message,
             include_thinking=req.thinking_mode,
             calendar_context=req.calendar_context.model_dump() if req.calendar_context else None,
-            assignment_pdf_text=req.assignment_pdf_text or "",
+            assignment_pdf_text=assignment_pdf_context,
             user_attachments_context=user_attachments_context,
         ):
             delta, reasoning_delta = _split_stream_chunk(chunk)

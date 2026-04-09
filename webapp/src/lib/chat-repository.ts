@@ -1,4 +1,4 @@
-import { Buffer } from "node:buffer";
+﻿import { Buffer } from "node:buffer";
 
 import {
   type AssignmentPayload,
@@ -7,6 +7,7 @@ import {
   type ChatMessageRole,
   type ChatSessionStatus,
   type PdfAttachment,
+  type PdfExtraction,
   type PersistedSessionSnapshot,
 } from "@/lib/chat-types";
 import {
@@ -54,6 +55,7 @@ type DbAssignmentSnapshotFile = {
   storage_path: string;
   byte_size?: number | null;
   extracted_text?: string | null;
+  extracted_structured?: unknown;
 };
 
 type DbStoredPdfBlob = {
@@ -690,13 +692,13 @@ export async function listSignedSnapshotPdfFiles(
 }
 
 /**
- * Persist extracted PDF text for each snapshot file.
- * Called after initial guide generation with the per-file text returned by the agent service.
- * Idempotent — safe to call multiple times for the same file.
+ * Persist structured PDF extraction payloads for each snapshot file.
+ * Called after initial guide generation with per-file extraction objects returned by the agent service.
+ * Idempotent â€” safe to call multiple times for the same file.
  */
-export async function persistSnapshotFilesExtractedText(
+export async function persistSnapshotFileExtractions(
   assignmentUuid: string,
-  entries: Array<{ fileSha256: string; extractedText: string }>,
+  entries: Array<{ fileSha256: string; extraction: PdfExtraction }>,
 ): Promise<void> {
   if (entries.length === 0) return;
 
@@ -713,43 +715,90 @@ export async function persistSnapshotFilesExtractedText(
           file_sha256: eq(entry.fileSha256),
         },
         headers: { Prefer: "return=minimal" },
-        body: { extracted_text: entry.extractedText },
+        body: {
+          extracted_text: entry.extraction.full_text,
+          extracted_structured: entry.extraction,
+        },
       }),
     ),
   );
 }
 
-/**
- * Retrieve stored extracted PDF text for all snapshot files linked to an assignment.
- * Returns a combined string in the same format used by the agent service,
- * or an empty string when no stored text exists (legacy sessions, non-PDF files).
- */
 export async function getSnapshotFilesExtractedText(
   assignmentUuid: string,
 ): Promise<string> {
+  const extractions = await getSnapshotFilesExtractedExtractions(assignmentUuid);
+  const parts = extractions
+    .filter((entry) => Boolean(entry.full_text))
+    .map((entry) => {
+      const safeName = entry.filename.replace(/"/g, "'");
+      return `<attachment name="${safeName}" source="assignment">\n${entry.full_text}\n</attachment>`;
+    });
+  return parts.join("\n\n");
+}
+
+export async function getSnapshotFilesExtractedExtractions(
+  assignmentUuid: string,
+): Promise<PdfExtraction[]> {
   const ingest = await getAssignmentIngestByAssignmentUuid(assignmentUuid);
-  if (!ingest) return "";
+  if (!ingest) return [];
 
   const rows = await selectMany<DbAssignmentSnapshotFile>({
     table: "assignment_snapshot_files",
     query: {
       assignment_snapshot_id: eq(ingest.assignment_snapshot_id),
-      extracted_text: "not.is.null",
-      select: "filename,extracted_text",
+      or: "(extracted_structured.not.is.null,extracted_text.not.is.null)",
+      select: "filename,file_sha256,extracted_text,extracted_structured",
       order: "created_at.asc",
     },
   });
 
-  const parts = rows
-    .filter((r) => r.extracted_text)
-    .map((r) => {
-      const safeName = r.filename.replace(/"/g, "'");
-      return `<attachment name="${safeName}" source="assignment">\n${r.extracted_text}\n</attachment>`;
+  const out: PdfExtraction[] = [];
+  for (const row of rows) {
+    const structured = row.extracted_structured;
+    if (structured && typeof structured === "object" && !Array.isArray(structured)) {
+      const parsed = structured as PdfExtraction;
+      out.push({
+        filename: parsed.filename || row.filename,
+        source: parsed.source || "assignment",
+        file_sha256: parsed.file_sha256 || row.file_sha256,
+        full_text: parsed.full_text || row.extracted_text || "",
+        pages: Array.isArray(parsed.pages) ? parsed.pages : [],
+        visual_signals: Array.isArray(parsed.visual_signals) ? parsed.visual_signals : [],
+        quality: parsed.quality ?? null,
+      });
+      continue;
+    }
+
+    const legacyText = row.extracted_text ?? "";
+    if (!legacyText.trim()) continue;
+    out.push({
+      filename: row.filename,
+      source: "assignment",
+      file_sha256: row.file_sha256,
+      full_text: legacyText,
+      pages: [
+        {
+          page_number: 1,
+          text: legacyText,
+          method: "legacy-text-cache",
+          blocks: [],
+          confidence: 1,
+        },
+      ],
+      visual_signals: [],
+      quality: {
+        strategy: "legacy_text_cache",
+        docling_available: false,
+        native_chars: legacyText.length,
+        docling_chars: 0,
+        reconciled_chars: legacyText.length,
+        notes: ["migrated_from_extracted_text"],
+      },
     });
-
-  return parts.join("\n\n");
+  }
+  return out;
 }
-
 async function deleteStoredBlobIfUnreferenced(input: {
   fileSha256: string;
   storagePathHint?: string;
@@ -2135,7 +2184,7 @@ async function buildGuideSessionInfos(
       countMap.set(row.session_id, { count: 1, latestAt: row.created_at });
     } else {
       existing.count++;
-      existing.latestAt = row.created_at; // asc order → last entry is latest
+      existing.latestAt = row.created_at; // asc order â†’ last entry is latest
     }
   }
 
@@ -2408,3 +2457,4 @@ export async function listResourcesForUser(input: {
     },
   };
 }
+
