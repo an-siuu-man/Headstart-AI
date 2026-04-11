@@ -22,7 +22,7 @@ import {
 } from "@/lib/chat-repository";
 import { supabaseStorageCreateSignedUrl } from "@/lib/supabase-rest";
 import { getSharedAssignmentCalendarContextForChat } from "@/lib/assignment-calendar-context";
-import { type AssignmentPayload, type PdfExtraction } from "@/lib/chat-types";
+import { type AssignmentPayload } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
 import { toOptionalString } from "@/lib/utils";
 import { retrieveLexicalContext } from "@/lib/rag/lexical-retriever";
@@ -398,27 +398,21 @@ async function runInitialGuide(input: {
             assignmentUuid,
             (pdfFileExtractions as Array<{
               file_sha256: string;
-              extraction?: PdfExtraction;
+              extraction?: { full_text?: string };
               full_text?: string;
             }>)
               .filter((e) => typeof e.file_sha256 === "string" && e.file_sha256.trim().length > 0)
               .map((e) => ({
                 fileSha256: e.file_sha256,
-                extraction:
-                  e.extraction && typeof e.extraction === "object"
-                    ? e.extraction
-                    : {
-                        filename: "unknown.pdf",
-                        source: "assignment",
-                        file_sha256: e.file_sha256,
-                        full_text: typeof e.full_text === "string" ? e.full_text : "",
-                        pages: [],
-                        visual_signals: [],
-                        quality: null,
-                      },
+                fullText:
+                  typeof e.extraction?.full_text === "string"
+                    ? e.extraction.full_text
+                    : typeof e.full_text === "string"
+                    ? e.full_text
+                    : "",
               })),
           ).catch((err: unknown) => {
-            console.error("[chat-runner] Failed to persist structured PDF extractions:", err);
+            console.error("[chat-runner] Failed to persist extracted PDF text:", err);
           });
         } else {
           // Legacy fallback for older agent payloads.
@@ -430,15 +424,7 @@ async function runInitialGuide(input: {
                 .filter((e) => typeof e.file_sha256 === "string" && e.file_sha256.trim().length > 0)
                 .map((e) => ({
                   fileSha256: e.file_sha256,
-                  extraction: {
-                    filename: "unknown.pdf",
-                    source: "assignment",
-                    file_sha256: e.file_sha256,
-                    full_text: e.extracted_text || "",
-                    pages: [],
-                    visual_signals: [],
-                    quality: null,
-                  },
+                  fullText: e.extracted_text || "",
                 })),
             ).catch((err: unknown) => {
               console.error("[chat-runner] Failed to persist legacy PDF extracted texts:", err);

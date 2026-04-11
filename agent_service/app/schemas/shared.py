@@ -42,7 +42,7 @@ class PdfTextBlock(BaseModel):
     text: str
     role: str = "text"
     page_number: int = 1
-    source: Literal["docling", "native", "reconciled"] = "docling"
+    source: Literal["docling", "native", "reconciled"] = "native"
     reading_order: int = 0
     confidence: float = 0.0
     bbox: Optional[List[float]] = None
@@ -62,13 +62,13 @@ class PdfVisualSignal(BaseModel):
 class PdfPageExtraction(BaseModel):
     page_number: int
     text: str = ""
-    method: str = "docling"
+    method: str = "native"
     blocks: List[PdfTextBlock] = Field(default_factory=list)
     confidence: float = 0.0
 
 
 class PdfExtractionQuality(BaseModel):
-    strategy: str = "docling_dual_pass"
+    strategy: str = "native_ocr_dual_pass"
     docling_available: bool = False
     native_chars: int = 0
     docling_chars: int = 0

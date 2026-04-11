@@ -55,7 +55,6 @@ type DbAssignmentSnapshotFile = {
   storage_path: string;
   byte_size?: number | null;
   extracted_text?: string | null;
-  extracted_structured?: unknown;
 };
 
 type DbStoredPdfBlob = {
@@ -692,13 +691,13 @@ export async function listSignedSnapshotPdfFiles(
 }
 
 /**
- * Persist structured PDF extraction payloads for each snapshot file.
- * Called after initial guide generation with per-file extraction objects returned by the agent service.
- * Idempotent â€” safe to call multiple times for the same file.
+ * Persist extracted PDF text for each snapshot file.
+ * Called after initial guide generation with per-file extraction results returned by the agent service.
+ * Idempotent - safe to call multiple times for the same file.
  */
 export async function persistSnapshotFileExtractions(
   assignmentUuid: string,
-  entries: Array<{ fileSha256: string; extraction: PdfExtraction }>,
+  entries: Array<{ fileSha256: string; fullText: string }>,
 ): Promise<void> {
   if (entries.length === 0) return;
 
@@ -716,8 +715,7 @@ export async function persistSnapshotFileExtractions(
         },
         headers: { Prefer: "return=minimal" },
         body: {
-          extracted_text: entry.extraction.full_text,
-          extracted_structured: entry.extraction,
+          extracted_text: entry.fullText,
         },
       }),
     ),
@@ -747,53 +745,38 @@ export async function getSnapshotFilesExtractedExtractions(
     table: "assignment_snapshot_files",
     query: {
       assignment_snapshot_id: eq(ingest.assignment_snapshot_id),
-      or: "(extracted_structured.not.is.null,extracted_text.not.is.null)",
-      select: "filename,file_sha256,extracted_text,extracted_structured",
+      extracted_text: "not.is.null",
+      select: "filename,file_sha256,extracted_text",
       order: "created_at.asc",
     },
   });
 
   const out: PdfExtraction[] = [];
   for (const row of rows) {
-    const structured = row.extracted_structured;
-    if (structured && typeof structured === "object" && !Array.isArray(structured)) {
-      const parsed = structured as PdfExtraction;
-      out.push({
-        filename: parsed.filename || row.filename,
-        source: parsed.source || "assignment",
-        file_sha256: parsed.file_sha256 || row.file_sha256,
-        full_text: parsed.full_text || row.extracted_text || "",
-        pages: Array.isArray(parsed.pages) ? parsed.pages : [],
-        visual_signals: Array.isArray(parsed.visual_signals) ? parsed.visual_signals : [],
-        quality: parsed.quality ?? null,
-      });
-      continue;
-    }
-
-    const legacyText = row.extracted_text ?? "";
-    if (!legacyText.trim()) continue;
+    const extractedText = row.extracted_text ?? "";
+    if (!extractedText.trim()) continue;
     out.push({
       filename: row.filename,
       source: "assignment",
       file_sha256: row.file_sha256,
-      full_text: legacyText,
+      full_text: extractedText,
       pages: [
         {
           page_number: 1,
-          text: legacyText,
-          method: "legacy-text-cache",
+          text: extractedText,
+          method: "snapshot-text-cache",
           blocks: [],
           confidence: 1,
         },
       ],
       visual_signals: [],
       quality: {
-        strategy: "legacy_text_cache",
+        strategy: "snapshot_text_cache",
         docling_available: false,
-        native_chars: legacyText.length,
+        native_chars: extractedText.length,
         docling_chars: 0,
-        reconciled_chars: legacyText.length,
-        notes: ["migrated_from_extracted_text"],
+        reconciled_chars: extractedText.length,
+        notes: ["loaded_from_extracted_text"],
       },
     });
   }

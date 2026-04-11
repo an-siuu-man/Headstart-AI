@@ -2,7 +2,7 @@ import unittest
 from unittest.mock import patch
 
 from app.schemas.requests import RunAgentRequest
-from app.schemas.shared import PdfExtraction, PdfFile, PdfTextBlock, PdfVisualSignal
+from app.schemas.shared import PdfExtraction, PdfFile, PdfVisualSignal
 from app.services.pdf_extraction_service import (
     collect_visual_signals_from_extractions,
     extract_pdf_extraction_from_pdf_bytes,
@@ -49,7 +49,7 @@ class TestPdfExtractionService(unittest.TestCase):
                     signal_types=["underline"],
                     score=0.9,
                     significance="medium",
-                    source="docling_style",
+                    source="style",
                 ),
             ],
         )
@@ -58,27 +58,11 @@ class TestPdfExtractionService(unittest.TestCase):
         self.assertEqual(len(merged), 1)
         self.assertEqual(sorted(merged[0]["signal_types"]), ["highlight", "underline"])
 
-    def test_extract_pdf_extraction_from_pdf_bytes_reconciles_docling_and_native(self):
+    def test_extract_pdf_extraction_from_pdf_bytes_uses_native_structured_output(self):
         with patch(
-            "app.services.pdf_extraction_service._extract_with_docling",
-            return_value=(
-                "Docling text",
-                [
-                    PdfTextBlock(
-                        block_id="b1",
-                        text="Docling text",
-                        page_number=1,
-                    )
-                ],
-                [],
-                {1: "Docling text"},
-                True,
-                ["docling_ocr=enabled"],
-            ),
-        ), patch(
             "app.services.pdf_extraction_service.extract_pdf_context_from_pdf_bytes",
             return_value=(
-                "--- Page 1 (native) ---\nNative text",
+                "--- Page 1 (native) ---\nNative text\n--- Page 2 (ocr) ---\nScanned text",
                 [{"file": "spec.pdf", "page": 1, "text": "Q1", "signal_types": ["highlight"], "score": 1.2, "significance": "high", "source": "annotation"}],
             ),
         ):
@@ -92,8 +76,13 @@ class TestPdfExtractionService(unittest.TestCase):
         self.assertEqual(extraction.filename, "spec.pdf")
         self.assertEqual(extraction.file_sha256, "abc123")
         self.assertTrue(extraction.full_text)
+        self.assertEqual(len(extraction.pages), 2)
+        self.assertEqual(extraction.pages[0].method, "native")
+        self.assertEqual(extraction.pages[1].method, "ocr")
+        self.assertGreater(len(extraction.pages[0].blocks), 0)
         self.assertEqual(len(extraction.visual_signals), 1)
-        self.assertEqual(extraction.quality.strategy, "docling_dual_pass_verify")
+        self.assertEqual(extraction.quality.strategy, "native_ocr_dual_pass")
+        self.assertFalse(extraction.quality.docling_available)
 
     def test_extract_pdf_extractions_with_file_map_uses_pre_supplied_extractions(self):
         preloaded = PdfExtraction(

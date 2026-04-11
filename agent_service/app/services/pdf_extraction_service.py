@@ -1,18 +1,16 @@
 """
 Artifact: agent_service/app/services/pdf_extraction_service.py
-Purpose: Build structured PDF extractions using a Docling-first, OCR-enabled pipeline.
+Purpose: Build structured PDF extractions using native PyMuPDF + OCR extraction.
 Author: Codex
 Created: 2026-04-04
+Revised:
+- 2026-04-09: Removed Docling-based extraction paths and unified on native service output.
 """
 
 from __future__ import annotations
 
-import io
-import json
 import re
-from collections import defaultdict
-from functools import lru_cache
-from typing import Any, Iterable, Optional
+from typing import Any, Literal, Optional
 
 from ..core.logging import get_logger
 from ..schemas.requests import RunAgentRequest
@@ -21,19 +19,15 @@ from ..schemas.shared import (
     PdfExtractionQuality,
     PdfPageExtraction,
     PdfTextBlock,
-    PdfTextStyle,
     PdfVisualSignal,
 )
 from .pdf_text_service import (
     MAX_VISUAL_SIGNALS_PER_FILE,
-    _build_signal,
-    _merge_text_variants,
+    _decode_pdf_base64,
+    _download_pdf_from_storage_url,
     _merge_visual_signals,
     _normalize_page_text,
     _score_text_quality,
-    _text_token_overlap_ratio,
-    _decode_pdf_base64,
-    _download_pdf_from_storage_url,
     extract_pdf_context_from_pdf_bytes,
     format_attachment_block,
 )
@@ -41,47 +35,7 @@ from .pdf_text_service import (
 logger = get_logger("headstart.main")
 
 PAGE_HEADER_RE = re.compile(r"^--- Page (\d+) \(([^)]+)\) ---$")
-MIN_DOCLING_TEXT_LEN = 2
-
-
-def _obj_to_dict(value: Any) -> dict[str, Any]:
-    if value is None:
-        return {}
-    if isinstance(value, dict):
-        return value
-    if hasattr(value, "model_dump"):
-        try:
-            dumped = value.model_dump()
-            if isinstance(dumped, dict):
-                return dumped
-        except Exception:
-            return {}
-    return {}
-
-
-def _iter_dict_nodes(value: Any) -> Iterable[dict[str, Any]]:
-    if isinstance(value, dict):
-        yield value
-        for item in value.values():
-            yield from _iter_dict_nodes(item)
-    elif isinstance(value, list):
-        for item in value:
-            yield from _iter_dict_nodes(item)
-
-
-def _dedupe_lines(lines: Iterable[str]) -> list[str]:
-    out: list[str] = []
-    seen: set[str] = set()
-    for line in lines:
-        clean = _normalize_page_text(line)
-        if not clean:
-            continue
-        key = re.sub(r"\s+", " ", clean.lower()).strip()
-        if key in seen:
-            continue
-        seen.add(key)
-        out.append(clean)
-    return out
+NO_TEXT_SENTINEL = "(no text extracted)"
 
 
 def _parse_native_page_sections(native_text: str) -> list[tuple[int, str, str]]:
@@ -103,7 +57,7 @@ def _parse_native_page_sections(native_text: str) -> list[tuple[int, str, str]]:
                     )
                 )
             current_page = int(match.group(1))
-            current_method = match.group(2)
+            current_method = match.group(2).strip() or "native"
             current_lines = []
             continue
         current_lines.append(raw)
@@ -119,269 +73,64 @@ def _parse_native_page_sections(native_text: str) -> list[tuple[int, str, str]]:
     return pages
 
 
-def _extract_docling_page_number(node: dict[str, Any]) -> int:
-    prov = node.get("prov")
-    if isinstance(prov, list) and prov:
-        first = _obj_to_dict(prov[0])
-        for key in ("page_no", "page", "page_number", "page_num"):
-            raw = first.get(key)
-            if isinstance(raw, int) and raw > 0:
-                return raw
-            if isinstance(raw, str) and raw.isdigit():
-                return int(raw)
-
-    for key in ("page_no", "page", "page_number", "page_num"):
-        raw = node.get(key)
-        if isinstance(raw, int) and raw > 0:
-            return raw
-        if isinstance(raw, str) and raw.isdigit():
-            return int(raw)
-
-    return 1
+def _source_from_page_method(method: str) -> Literal["native", "reconciled"]:
+    normalized = (method or "").strip().lower()
+    if normalized == "hybrid":
+        return "reconciled"
+    return "native"
 
 
-def _extract_docling_bbox(node: dict[str, Any]) -> Optional[list[float]]:
-    prov = node.get("prov")
-    if isinstance(prov, list) and prov:
-        first = _obj_to_dict(prov[0])
-        bbox = first.get("bbox")
-        if isinstance(bbox, list) and len(bbox) >= 4:
-            try:
-                return [float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3])]
-            except Exception:
-                return None
-        if isinstance(bbox, dict):
-            keys = ("l", "t", "r", "b")
-            if all(k in bbox for k in keys):
-                try:
-                    return [float(bbox["l"]), float(bbox["t"]), float(bbox["r"]), float(bbox["b"])]
-                except Exception:
-                    return None
-    return None
-
-
-def _extract_docling_formatting(node: dict[str, Any]) -> Optional[PdfTextStyle]:
-    raw_fmt = node.get("formatting")
-    fmt = _obj_to_dict(raw_fmt)
-    if not fmt and raw_fmt is not None and hasattr(raw_fmt, "__dict__"):
-        try:
-            fmt = dict(raw_fmt.__dict__)
-        except Exception:
-            fmt = {}
-
-    if not fmt:
-        return None
-
-    def _flag(*keys: str) -> bool:
-        for key in keys:
-            value = fmt.get(key)
-            if isinstance(value, bool):
-                if value:
-                    return True
-            elif isinstance(value, (int, float)) and value != 0:
-                return True
-        return False
-
-    style = PdfTextStyle(
-        bold=_flag("bold", "is_bold"),
-        italic=_flag("italic", "is_italic"),
-        underline=_flag("underline", "is_underline"),
-        strikethrough=_flag("strikethrough", "strike", "is_strikethrough"),
-    )
-    if not (style.bold or style.italic or style.underline or style.strikethrough):
-        return None
-    return style
-
-
-def _extract_docling_text(node: dict[str, Any]) -> str:
-    for key in ("text", "orig"):
-        value = node.get(key)
-        if isinstance(value, str):
-            text = _normalize_page_text(value)
-            if len(text) >= MIN_DOCLING_TEXT_LEN:
-                return text
-    return ""
-
-
-def _extract_docling_blocks_and_signals(
-    doc_json: dict[str, Any],
-    filename: str,
-) -> tuple[list[PdfTextBlock], list[dict], dict[int, str]]:
+def _build_page_blocks(text: str, page_number: int, method: str) -> list[PdfTextBlock]:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     blocks: list[PdfTextBlock] = []
-    signals: list[dict] = []
-    page_lines: dict[int, list[str]] = defaultdict(list)
-    seen: set[tuple[int, str]] = set()
-    reading_order = 0
+    source = _source_from_page_method(method)
 
-    for node in _iter_dict_nodes(doc_json):
-        text = _extract_docling_text(node)
-        if not text:
-            continue
-
-        page = _extract_docling_page_number(node)
-        dedupe_key = (page, re.sub(r"\s+", " ", text.lower()).strip())
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
-
-        style = _extract_docling_formatting(node)
-        bbox = _extract_docling_bbox(node)
-        reading_order += 1
-
-        block = PdfTextBlock(
-            block_id=str(node.get("self_ref") or f"docling-{page}-{reading_order}"),
-            text=text,
-            role=str(node.get("label") or "text"),
-            page_number=page,
-            source="docling",
-            reading_order=reading_order,
-            confidence=1.0,
-            bbox=bbox,
-            formatting=style,
-        )
-        blocks.append(block)
-        page_lines[page].append(text)
-
-        signal_types: list[str] = []
-        if style and style.bold:
-            signal_types.append("bold")
-        if style and style.underline:
-            signal_types.append("underline")
-        if style and style.strikethrough:
-            signal_types.append("strikeout")
-        if signal_types:
-            signal = _build_signal(
-                filename=filename,
-                page_number=page,
-                text=text,
-                signal_types=signal_types,
-                source="docling_style",
+    for index, line in enumerate(lines, start=1):
+        blocks.append(
+            PdfTextBlock(
+                block_id=f"native-{page_number}-{index}",
+                text=line,
+                role="text",
+                page_number=page_number,
+                source=source,
+                reading_order=index,
+                confidence=max(_score_text_quality(line), 0.0),
             )
-            if signal:
-                signals.append(signal)
-
-    collapsed_pages = {
-        page: "\n".join(_dedupe_lines(lines)) for page, lines in page_lines.items()
-    }
-    return blocks, signals, collapsed_pages
-
-
-@lru_cache(maxsize=1)
-def _build_docling_converter() -> tuple[Any, list[str]]:
-    notes: list[str] = []
-    try:
-        from docling.datamodel.base_models import InputFormat
-        from docling.datamodel.pipeline_options import (
-            PdfPipelineOptions,
-            TableStructureOptions,
-            TesseractCliOcrOptions,
         )
-        from docling.document_converter import DocumentConverter, PdfFormatOption
-    except ImportError as exc:
-        raise RuntimeError("docling_not_installed") from exc
-
-    pipeline_options = PdfPipelineOptions()
-    pipeline_options.do_ocr = True
-    pipeline_options.do_table_structure = True
-    notes.append("docling_ocr=enabled")
-
-    try:
-        pipeline_options.table_structure_options = TableStructureOptions(do_cell_matching=True)
-        notes.append("table_structure=enabled")
-    except Exception:
-        notes.append("table_structure=default")
-
-    try:
-        from docling.datamodel.pipeline_options import TableFormerMode
-
-        pipeline_options.table_structure_options.mode = TableFormerMode.ACCURATE
-        notes.append("tableformer=accurate")
-    except Exception:
-        notes.append("tableformer=default")
-
-    try:
-        ocr_options = TesseractCliOcrOptions(force_full_page_ocr=False)
-        pipeline_options.ocr_options = ocr_options
-        notes.append("ocr_backend=tesseract_cli")
-    except Exception:
-        notes.append("ocr_backend=default")
-
-    converter = DocumentConverter(
-        format_options={
-            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options),
-        }
-    )
-    return converter, notes
+    return blocks
 
 
-def _extract_with_docling(pdf_bytes: bytes, filename: str) -> tuple[str, list[PdfTextBlock], list[dict], dict[int, str], bool, list[str]]:
-    try:
-        converter, notes = _build_docling_converter()
-    except RuntimeError:
-        return "", [], [], {}, False, ["docling_unavailable"]
-
-    try:
-        from docling.datamodel.base_models import DocumentStream
-
-        source = DocumentStream(name=filename, stream=io.BytesIO(pdf_bytes))
-        result = converter.convert(source)
-        document = getattr(result, "document", None)
-        if document is None:
-            raise RuntimeError("docling returned no document")
-
-        markdown = ""
-        if hasattr(document, "export_to_markdown"):
-            markdown = _normalize_page_text(document.export_to_markdown() or "")
-
-        doc_json: dict[str, Any] = {}
-        if hasattr(document, "export_to_dict"):
-            exported = document.export_to_dict()
-            if isinstance(exported, dict):
-                doc_json = exported
-        elif hasattr(document, "model_dump"):
-            dumped = document.model_dump()
-            if isinstance(dumped, dict):
-                doc_json = dumped
-        elif hasattr(document, "export_to_json"):
-            raw = document.export_to_json()
-            if isinstance(raw, str) and raw.strip():
-                parsed = json.loads(raw)
-                if isinstance(parsed, dict):
-                    doc_json = parsed
-
-        blocks, signals, page_map = _extract_docling_blocks_and_signals(doc_json, filename)
-        if not blocks and markdown:
-            blocks = [
-                PdfTextBlock(
-                    block_id=f"docling-{filename}-root",
-                    text=markdown,
-                    role="document",
-                    page_number=1,
-                    source="docling",
-                    reading_order=1,
-                    confidence=1.0,
-                )
-            ]
-            page_map = {1: markdown}
-
-        return markdown, blocks, signals, page_map, True, notes
-    except Exception as exc:
-        logger.warning("Docling extraction failed for %r: %s", filename, exc)
-        return "", [], [], {}, False, ["docling_failed"]
+def _to_page_models(native_pages: list[tuple[int, str, str]]) -> list[PdfPageExtraction]:
+    pages: list[PdfPageExtraction] = []
+    for page_number, method, raw_text in native_pages:
+        page_text = _normalize_page_text(raw_text)
+        if page_text == NO_TEXT_SENTINEL:
+            page_text = ""
+        pages.append(
+            PdfPageExtraction(
+                page_number=page_number,
+                text=page_text,
+                method=method or "native",
+                blocks=_build_page_blocks(page_text, page_number, method),
+                confidence=max(_score_text_quality(page_text), 0.0),
+            )
+        )
+    return pages
 
 
-def _reconcile_full_text(docling_text: str, native_text: str) -> str:
-    if docling_text and native_text:
-        overlap = _text_token_overlap_ratio(docling_text, native_text)
-        if overlap < 0.65:
-            return _merge_text_variants(docling_text, native_text)
+def _fallback_full_text_from_structured_text(native_text: str) -> str:
+    if not native_text:
+        return ""
 
-        docling_score = _score_text_quality(docling_text)
-        native_score = _score_text_quality(native_text)
-        if docling_score >= native_score - 0.02:
-            return docling_text
-        return _merge_text_variants(native_text, docling_text)
-    return docling_text or native_text
+    kept_lines: list[str] = []
+    for raw in native_text.splitlines():
+        line = raw.strip()
+        if PAGE_HEADER_RE.match(line):
+            continue
+        if line == NO_TEXT_SENTINEL:
+            continue
+        kept_lines.append(raw)
+    return _normalize_page_text("\n".join(kept_lines))
 
 
 def _to_visual_signal_models(signals: list[dict]) -> list[PdfVisualSignal]:
@@ -394,93 +143,45 @@ def _to_visual_signal_models(signals: list[dict]) -> list[PdfVisualSignal]:
     return out
 
 
-def _to_page_models(
-    docling_blocks: list[PdfTextBlock],
-    docling_pages: dict[int, str],
-    native_pages: list[tuple[int, str, str]],
-) -> list[PdfPageExtraction]:
-    pages: list[PdfPageExtraction] = []
-    docling_blocks_by_page: dict[int, list[PdfTextBlock]] = defaultdict(list)
-    for block in docling_blocks:
-        docling_blocks_by_page[int(block.page_number)].append(block)
-
-    page_numbers = sorted(set(docling_pages.keys()) | {p[0] for p in native_pages})
-    for page_number in page_numbers:
-        docling_text = _normalize_page_text(docling_pages.get(page_number, ""))
-        native_entry = next((p for p in native_pages if p[0] == page_number), None)
-        native_text = _normalize_page_text(native_entry[2] if native_entry else "")
-        page_text = _reconcile_full_text(docling_text, native_text)
-        method = "docling+native_verify" if docling_text and native_text else ("docling" if docling_text else (native_entry[1] if native_entry else "native"))
-
-        pages.append(
-            PdfPageExtraction(
-                page_number=page_number,
-                text=page_text,
-                method=method,
-                blocks=docling_blocks_by_page.get(page_number, []),
-                confidence=max(_score_text_quality(page_text), 0.0),
-            )
-        )
-
-    if pages:
-        return pages
-
-    # Last-resort fallback for malformed documents with no page segmentation.
-    if docling_blocks:
-        text = _normalize_page_text("\n".join(block.text for block in docling_blocks))
-        return [
-            PdfPageExtraction(
-                page_number=1,
-                text=text,
-                method="docling",
-                blocks=docling_blocks,
-                confidence=max(_score_text_quality(text), 0.0),
-            )
-        ]
-
-    return []
-
-
 def extract_pdf_extraction_from_pdf_bytes(
     pdf_bytes: bytes,
     filename: str,
     source: str = "assignment",
     file_sha256: Optional[str] = None,
 ) -> PdfExtraction:
-    docling_text, docling_blocks, docling_signals, docling_pages, docling_ok, docling_notes = _extract_with_docling(
-        pdf_bytes, filename
-    )
-
     native_structured_text, native_signals = extract_pdf_context_from_pdf_bytes(pdf_bytes, filename)
     native_pages = _parse_native_page_sections(native_structured_text)
-    native_plain_text = _normalize_page_text(
-        "\n\n".join(page_text for _, _, page_text in native_pages)
-    )
-    full_text = _reconcile_full_text(docling_text, native_plain_text)
+    pages = _to_page_models(native_pages)
 
-    all_signals = _merge_visual_signals(
-        [*native_signals, *docling_signals],
-        limit=MAX_VISUAL_SIGNALS_PER_FILE,
+    full_text = _normalize_page_text(
+        "\n\n".join(page.text for page in pages if page.text)
     )
-    pages = _to_page_models(docling_blocks, docling_pages, native_pages)
+    if not full_text:
+        full_text = _fallback_full_text_from_structured_text(native_structured_text)
+
     if not pages and full_text:
         pages = [
             PdfPageExtraction(
                 page_number=1,
                 text=full_text,
-                method="docling" if docling_ok else "native",
-                blocks=docling_blocks,
+                method="native_unsegmented",
+                blocks=_build_page_blocks(full_text, page_number=1, method="native"),
                 confidence=max(_score_text_quality(full_text), 0.0),
             )
         ]
 
+    all_signals = _merge_visual_signals(
+        native_signals,
+        limit=MAX_VISUAL_SIGNALS_PER_FILE,
+    )
+
     quality = PdfExtractionQuality(
-        strategy="docling_dual_pass_verify",
-        docling_available=docling_ok,
-        native_chars=len(native_plain_text),
-        docling_chars=len(docling_text),
+        strategy="native_ocr_dual_pass",
+        docling_available=False,
+        native_chars=len(full_text),
+        docling_chars=0,
         reconciled_chars=len(full_text),
-        notes=docling_notes,
+        notes=["source=native_pymupdf_ocr"],
     )
 
     return PdfExtraction(
