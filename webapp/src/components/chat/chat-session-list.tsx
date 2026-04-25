@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { assignmentCategoryLabel, formatDateTime } from "@/lib/chat-utils"
+import { assignmentCategoryLabel, assignmentCategoryTone, formatDateTime } from "@/lib/chat-utils"
 import { type ChatSessionStatus } from "@/lib/chat-types"
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -440,6 +440,7 @@ export function ChatSessionList() {
                                   ? item.last_user_message.trim()
                                   : "Chat Session"
                               const categoryLabel = assignmentCategoryLabel(item.assignment_category)
+                              const categoryTone = assignmentCategoryTone(item.assignment_category)
                               const isDeleting = deletingSessionIds.has(item.session_id)
 
                               return (
@@ -478,7 +479,7 @@ export function ChatSessionList() {
                                           {categoryLabel ? (
                                             <Badge
                                               variant="outline"
-                                              className="shrink-0 border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-200"
+                                              className={`shrink-0 px-2 py-0.5 text-[10px] ${categoryTone}`}
                                             >
                                               {categoryLabel}
                                             </Badge>

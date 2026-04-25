@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/breadcrumb"
 import {
   assignmentCategoryLabel,
+  assignmentCategoryTone,
   extractGuideMarkdown,
   formatDateTime,
   removeThinkBlocks,
@@ -543,6 +544,7 @@ function DashboardChatPageContent() {
     return "New Chat"
   }, [effectiveSession])
   const categoryLabel = assignmentCategoryLabel(effectiveSession?.assignment_category)
+  const categoryTone = assignmentCategoryTone(effectiveSession?.assignment_category)
 
   async function handleRegenerateGuide() {
     if (!sessionId || !effectiveSession || isRegenerating) return
@@ -685,7 +687,7 @@ function DashboardChatPageContent() {
           {categoryLabel ? (
             <Badge
               variant="outline"
-              className="w-fit border-emerald-500/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] text-emerald-700 dark:text-emerald-200"
+              className={`w-fit px-2 py-0.5 text-[10px] ${categoryTone}`}
             >
               {categoryLabel}
             </Badge>
