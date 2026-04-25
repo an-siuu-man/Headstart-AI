@@ -87,6 +87,9 @@ class TestRunAgentService(unittest.TestCase):
                     {"content_delta": "Guide body", "reasoning_delta": "thinking-2"},
                 ]
             ),
+        ), patch(
+            "app.services.run_agent_service._classify_assignment",
+            return_value="coding",
         ):
             events = list(stream_run_agent_workflow(req, route_path="/api/v1/runs/stream"))
 
@@ -100,7 +103,22 @@ class TestRunAgentService(unittest.TestCase):
         self.assertEqual(len(completed_events), 1)
         completed = completed_events[0]["data"]
         self.assertEqual(completed["guideMarkdown"], "Guide body")
+        self.assertEqual(completed["assignment_category"], "coding")
         self.assertEqual(completed["thinking_content"], "thinking-1thinking-2")
+
+        classifying_events = [
+            event
+            for event in events
+            if event.get("event") == "run.stage"
+            and event.get("data", {}).get("stage") == "classifying_assignment"
+        ]
+        self.assertEqual(len(classifying_events), 1)
+        self.assertEqual(classifying_events[0]["data"]["status_message"], "Classifying assignment")
+        classifying_index = events.index(classifying_events[0])
+        first_delta_index = next(
+            index for index, event in enumerate(events) if event.get("event") == "run.delta"
+        )
+        self.assertLess(classifying_index, first_delta_index)
 
     def test_stream_chat_workflow_emits_reasoning_deltas_and_completion_thinking(self):
         req = ChatStreamRequest(
@@ -135,6 +153,7 @@ class TestRunAgentService(unittest.TestCase):
         self.assertEqual(completed["thinking_content"], "think-athink-b")
         mock_stream.assert_called_once_with(
             assignment_payload={"title": "HW1"},
+            assignment_category="",
             guide_markdown="Guide body",
             chat_history=[],
             retrieval_context=[],
@@ -180,6 +199,7 @@ class TestRunAgentService(unittest.TestCase):
         self.assertEqual(len(completed_events), 1)
         mock_stream.assert_called_once_with(
             assignment_payload={"title": "HW1"},
+            assignment_category="",
             guide_markdown="Guide body",
             chat_history=[],
             retrieval_context=[],
@@ -242,6 +262,7 @@ class TestRunAgentService(unittest.TestCase):
         self.assertEqual(len(completed_events), 1)
         mock_stream.assert_called_once_with(
             assignment_payload={"title": "HW1"},
+            assignment_category="",
             guide_markdown="Guide body",
             chat_history=[],
             retrieval_context=[],
@@ -276,6 +297,41 @@ class TestRunAgentService(unittest.TestCase):
                     }
                 ],
             },
+            assignment_pdf_text="",
+            user_attachments_context="",
+        )
+
+    def test_stream_chat_workflow_passes_assignment_category(self):
+        req = ChatStreamRequest(
+            assignment_payload={"title": "HW1"},
+            assignment_category="mathematics",
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="How should I start?",
+        )
+
+        with patch(
+            "app.services.run_agent_service._stream_headstart_chat_answer",
+            return_value=iter(
+                [
+                    {"content_delta": "Start by naming the givens.", "reasoning_delta": ""},
+                ]
+            ),
+        ) as mock_stream:
+            events = list(stream_chat_workflow(req, route_path="/api/v1/chats/stream"))
+
+        completed_events = [event for event in events if event.get("event") == "chat.completed"]
+        self.assertEqual(len(completed_events), 1)
+        mock_stream.assert_called_once_with(
+            assignment_payload={"title": "HW1"},
+            assignment_category="mathematics",
+            guide_markdown="Guide body",
+            chat_history=[],
+            retrieval_context=[],
+            user_message="How should I start?",
+            include_thinking=False,
+            calendar_context=None,
             assignment_pdf_text="",
             user_attachments_context="",
         )
