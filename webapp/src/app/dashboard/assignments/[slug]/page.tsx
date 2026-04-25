@@ -264,10 +264,11 @@ export default function AssignmentDetailPage() {
         if (typeof body.content_text !== "string") {
           throw new Error("Guide version content missing")
         }
+        const contentText = body.content_text
 
         setGuideContentByVersion((current) => ({
           ...current,
-          [versionNumber]: body.content_text,
+          [versionNumber]: contentText,
         }))
       } catch (error) {
         setGuideVersionError(error instanceof Error ? error.message : "Failed to load guide version.")

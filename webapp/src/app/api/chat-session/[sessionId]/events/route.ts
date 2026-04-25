@@ -67,6 +67,7 @@ function applyRuntimeEvent(session: ChatSessionDto, event: RuntimeChatEvent) {
     session.progress_percent = runtime.progressPercent;
     session.status_message = runtime.statusMessage;
     session.streamed_guide_markdown = runtime.streamedGuideMarkdown;
+    session.assignment_category = runtime.assignmentCategory ?? session.assignment_category ?? null;
     session.result = runtime.result ?? session.result;
     session.error = runtime.error ?? null;
     session.updated_at = Math.max(session.updated_at, runtime.updatedAt);
@@ -169,6 +170,7 @@ export async function GET(
               progress_percent: currentSession.progress_percent,
               status_message: currentSession.status_message,
               streamed_guide_markdown: currentSession.streamed_guide_markdown,
+              assignment_category: currentSession.assignment_category,
               result: currentSession.result,
               error: currentSession.error,
               updated_at: currentSession.updated_at,

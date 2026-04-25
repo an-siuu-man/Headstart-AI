@@ -19,6 +19,7 @@ The Next.js web app serves two roles:
 - `src/lib/google-calendar-session.ts`: Token resolution/refresh state handling.
 - `src/lib/google-calendar.ts`: Google Calendar API client (OAuth, list events, create events, revoke, refresh).
 - `src/lib/calendar-google-markers.ts`: Study-block marker contract and classification helpers.
+- `src/lib/chat-session-runner.ts`: Streams guide/chat agent calls, persists guide versions, PDF extraction text, and assignment category metadata.
 
 ## Module Boundaries
 
@@ -93,6 +94,8 @@ The Next.js web app serves two roles:
 
 ## Data and Persistence
 
+- `public.chat_sessions.assignment_category` stores the nullable assignment category returned by the agent service (`coding`, `mathematics`, `science`, `speech`, `essay`, or `general`).
+- The category is shown as a compact label in the chat header and chat list, and is passed back to the agent service for follow-up chat prompt selection.
 - Local planner table `public.assignment_work_blocks` has been removed.
 - Historical create migration: `supabase/migrations/20260325_calendar_work_blocks.sql`.
 - Removal migration: `supabase/migrations/20260326_drop_assignment_work_blocks.sql`.
@@ -115,3 +118,4 @@ The Next.js web app serves two roles:
 - Invalid range/timezone returns `400`.
 - Google 400/401/403 responses transition integration to `needs_attention` and suppress Google events for planner responses.
 - Upstream/network/provider failures map to `500` with error detail.
+- Assignment category persistence is best-effort. If the category is missing or `NULL`, chat sessions continue with the base follow-up prompt and no category label.

@@ -146,7 +146,11 @@ export function markRuntimeFailed(sessionId: string, error: string) {
   });
 }
 
-export function markRuntimeCompleted(sessionId: string, guideMarkdown: string) {
+export function markRuntimeCompleted(
+  sessionId: string,
+  guideMarkdown: string,
+  assignmentCategory?: string | null,
+) {
   const current = ensureRuntimeSession(sessionId);
   return setRuntimeSession(sessionId, {
     ...current,
@@ -155,6 +159,7 @@ export function markRuntimeCompleted(sessionId: string, guideMarkdown: string) {
     progressPercent: 100,
     statusMessage: "Guide ready",
     streamedGuideMarkdown: guideMarkdown || current.streamedGuideMarkdown,
+    assignmentCategory: assignmentCategory ?? current.assignmentCategory ?? null,
     result: {
       guideMarkdown: guideMarkdown || current.streamedGuideMarkdown,
     },

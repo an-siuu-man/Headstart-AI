@@ -17,6 +17,7 @@ import {
   insertGuideVersion,
   listSignedSnapshotPdfFiles,
   persistSnapshotFileExtractions,
+  updateChatSessionCategory,
   updateChatMessageContent,
   updateChatSessionStatus,
 } from "@/lib/chat-repository";
@@ -170,6 +171,7 @@ function toStage(value: unknown) {
     value === "calling_agent" ||
     value === "streaming_output" ||
     value === "validating_output" ||
+    value === "classifying_assignment" ||
     value === "parsing_response" ||
     value === "completed" ||
     value === "failed" ||
@@ -373,9 +375,16 @@ async function runInitialGuide(input: {
           throw new Error("Agent returned empty guide markdown");
         }
 
+        const assignmentCategory = toOptionalString(data.assignment_category);
+        if (assignmentCategory) {
+          updateChatSessionCategory(sessionId, assignmentCategory).catch((err: unknown) => {
+            console.error("[chat-runner] Failed to persist assignment category:", err);
+          });
+        }
+
         await updateChatSessionStatus(sessionId, "completed");
 
-        markRuntimeCompleted(sessionId, guideMarkdown);
+        markRuntimeCompleted(sessionId, guideMarkdown, assignmentCategory ?? null);
 
         // Persist v1 — best-effort; don't fail the whole run if this errors
         insertGuideVersion({
@@ -669,6 +678,7 @@ async function runFollowupChat(input: {
       agentUrl,
       JSON.stringify({
         assignment_payload: assignmentPayload,
+        assignment_category: sessionContext.assignmentCategory ?? "",
         assignment_pdf_extractions: storedAssignmentPdfExtractions,
         assignment_pdf_text: pdfIsLong ? "" : pdfText,
         guide_markdown: sessionContext.guideMarkdown,
@@ -966,6 +976,7 @@ async function runGuideRegeneration(input: {
       agentUrl,
       JSON.stringify({
         assignment_payload: assignmentPayload,
+        assignment_category: sessionContext.assignmentCategory ?? "",
         guide_markdown: sessionContext.guideMarkdown,
         chat_history: chatHistory,
         retrieval_context: retrievalContext,

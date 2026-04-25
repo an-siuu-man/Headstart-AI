@@ -162,7 +162,7 @@ export function CalendarProposalCard({
                 transition={{ duration: 0.15 }}
               >
                 <p className="mb-3 text-xs text-muted-foreground">
-                  Select the sessions you'd like to add to Google Calendar:
+                  Select the sessions you would like to add to Google Calendar:
                 </p>
 
                 <div className="space-y-2">

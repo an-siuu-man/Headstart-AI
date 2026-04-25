@@ -332,7 +332,6 @@ export default function DashboardCalendarPage() {
           <CardContent>
             <div className="headstart-calendar-shell__frame relative rounded-2xl border border-border/70 bg-background/80 p-2.5 sm:p-3">
               <FullCalendar
-                className="headstart-calendar-shell__calendar"
                 plugins={[dayGridPlugin]}
                 initialView="dayGridMonth"
                 height="auto"

@@ -9,6 +9,7 @@ The FastAPI agent service receives normalized assignment payloads (plus optional
 - `app/main.py`: FastAPI entrypoint, route registration, legacy compatibility endpoints.
 - `app/api/v1/routes/runs.py`: Request handler wrapper for run execution.
 - `app/services/run_agent_service.py`: Request-level workflow orchestration.
+- `app/services/classification_service.py`: Best-effort assignment category classifier used after streamed guide generation.
 - `app/services/pdf_text_service.py`: Page-aware PDF extraction (native-first classification, selective OCR fallback, normalization, visual-significance extraction).
 - `app/orchestrators/headstart_orchestrator.py`: LLM prompting, structured parsing, and streaming guide/chat generation.
 - `app/clients/llm_client.py`: LLM client factory for NVIDIA-hosted `openai/gpt-oss-120b` via LangChain.
@@ -84,6 +85,8 @@ Both run endpoints share the same internal handler path through `handle_run_agen
 13. If needed, orchestrator falls back to prompt-based generation with JSON repair/parsing heuristics.
 14. Service returns structured dictionary back through route layer.
 
+For streamed guide generation, the service extracts assignment context, emits a `classifying_assignment` stage, then calls the lightweight classifier before guide generation begins. The final `run.completed` SSE payload includes `assignment_category` as structured metadata. Classification is fail-open and returns `general` if provider setup, output parsing, or the LLM call fails.
+
 ## PDF Extraction Strategy
 
 - Native text extraction is the default path for highest fidelity when a text layer exists.
@@ -97,6 +100,8 @@ Both run endpoints share the same internal handler path through `handle_run_agen
 
 - Preferred streaming mode: NVIDIA-hosted `openai/gpt-oss-120b` through LangChain `ChatNVIDIA.stream`.
 - Streaming mode emits provider chunks directly for long-lived guide and chat responses.
+- Initial streamed runs perform a short post-guide classification call with the same hosted model to produce one of `coding`, `mathematics`, `science`, `speech`, `essay`, or `general`.
+- Follow-up chat prompts append an internal category-specific system prompt addendum when a recognized category is supplied by the webapp. The category is metadata and is not rendered into assistant chat responses.
 - Legacy non-stream primary mode: schema-bound structured output for reliable contract adherence.
 - Legacy non-stream fallback mode: strict JSON prompt with retries (`MAX_RETRIES`) and parser repair.
 - Parsing safeguards: markdown fence stripping, quote normalization, trailing comma cleanup, control-character cleanup, key quoting heuristics.
@@ -121,3 +126,4 @@ Both run endpoints share the same internal handler path through `handle_run_agen
 - Visual-signal extraction failures are logged and skipped per page/file; text extraction and run generation continue.
 - Route wrapper catches unhandled workflow exceptions and returns HTTP 500.
 - Parsing failures after all retries raise explicit runtime errors with diagnostics.
+- Assignment classification failures do not fail guide generation; the service emits `general` and keeps the chat prompt on the base behavior.

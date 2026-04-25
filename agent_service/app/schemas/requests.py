@@ -94,6 +94,7 @@ class CalendarContext(BaseModel):
 
 class ChatStreamRequest(BaseModel):
     assignment_payload: Dict[str, Any]
+    assignment_category: Optional[str] = ""
     guide_markdown: str = ""
     chat_history: List[ChatHistoryMessage] = Field(default_factory=list)
     retrieval_context: List[RetrievalChunk] = Field(default_factory=list)

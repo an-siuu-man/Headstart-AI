@@ -91,6 +91,8 @@ export function stageLabel(stage: ChatSessionStage) {
       return "Streaming Output"
     case "validating_output":
       return "Validating Output"
+    case "classifying_assignment":
+      return "Classifying assignment"
     case "parsing_response":
       return "Parsing Response"
     case "chat_streaming":
@@ -109,4 +111,42 @@ export function formatDateTime(value: number | string | null | undefined) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return null
   return format(date, "MMM d, yyyy h:mm a")
+}
+
+export function assignmentCategoryLabel(value: string | null | undefined) {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "coding":
+      return "Coding"
+    case "mathematics":
+      return "Mathematics"
+    case "science":
+      return "Science"
+    case "speech":
+      return "Speech"
+    case "essay":
+      return "Essay"
+    case "general":
+      return "General"
+    default:
+      return null
+  }
+}
+
+export function assignmentCategoryTone(value: string | null | undefined) {
+  switch ((value ?? "").trim().toLowerCase()) {
+    case "coding":
+      return "border-sky-500/35 bg-sky-500/10 text-sky-700 dark:text-sky-200"
+    case "mathematics":
+      return "border-violet-500/35 bg-violet-500/10 text-violet-700 dark:text-violet-200"
+    case "science":
+      return "border-emerald-500/35 bg-emerald-500/10 text-emerald-700 dark:text-emerald-200"
+    case "speech":
+      return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-200"
+    case "essay":
+      return "border-rose-500/35 bg-rose-500/10 text-rose-700 dark:text-rose-200"
+    case "general":
+      return "border-slate-500/35 bg-slate-500/10 text-slate-700 dark:text-slate-200"
+    default:
+      return "border-border/60 bg-muted/40 text-muted-foreground"
+  }
 }

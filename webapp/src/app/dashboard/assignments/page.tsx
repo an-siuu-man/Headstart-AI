@@ -7,9 +7,11 @@ import { format, formatDistanceToNow } from "date-fns"
 import {
   Search,
   Filter,
+  ArrowUpDown,
   Calendar as CalendarIcon,
   CheckCircle2,
   LoaderCircle,
+  Paperclip,
   RotateCcw,
   Trash2,
 } from "lucide-react"
@@ -25,6 +27,23 @@ import {
 } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Badge } from "@/components/ui/badge"
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import {
   Dialog,
   DialogContent,
@@ -57,6 +76,10 @@ type AssignmentItem = {
   submitted_at: string | null
 }
 
+type DueFilter = "all" | "overdue" | "today" | "week" | "no-date"
+type PriorityFilter = "all" | AssignmentItem["priority"]
+type SortMode = "due" | "updated" | "priority" | "course" | "title"
+
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
 const MAX_COURSE_NAME_LENGTH = 48
 
@@ -64,6 +87,12 @@ function priorityTone(priority: AssignmentItem["priority"]) {
   if (priority === "High") return "border-red-200/80 bg-red-50 text-red-700"
   if (priority === "Medium") return "border-amber-200/80 bg-amber-50 text-amber-700"
   return "border-emerald-200/80 bg-emerald-50 text-emerald-700"
+}
+
+function priorityRailTone(priority: AssignmentItem["priority"]) {
+  if (priority === "High") return "border-l-red-500"
+  if (priority === "Medium") return "border-l-amber-400"
+  return "border-l-emerald-500"
 }
 
 function statusTone(status: AssignmentItem["status"]) {
@@ -85,9 +114,74 @@ function truncateWithEllipsis(value: string, maxLength: number) {
   return `${normalizedValue.slice(0, Math.max(0, maxLength - 1)).trimEnd()}…`
 }
 
+function courseNameForFilter(assignment: AssignmentItem) {
+  return assignment.course_name?.trim() || "Unknown course"
+}
+
+function priorityWeight(priority: AssignmentItem["priority"]) {
+  if (priority === "High") return 0
+  if (priority === "Medium") return 1
+  return 2
+}
+
+function isSameLocalDay(left: Date, right: Date) {
+  return (
+    left.getFullYear() === right.getFullYear() &&
+    left.getMonth() === right.getMonth() &&
+    left.getDate() === right.getDate()
+  )
+}
+
+function matchesDueFilter(assignment: AssignmentItem, dueFilter: DueFilter) {
+  if (dueFilter === "all") return true
+
+  const dueAt = parseIsoDate(assignment.due_at_iso)
+  if (dueFilter === "no-date") return !dueAt
+  if (!dueAt || assignment.is_submitted) return false
+
+  const now = new Date()
+  if (dueFilter === "overdue") return assignment.is_overdue
+  if (dueFilter === "today") return isSameLocalDay(dueAt, now)
+  if (dueFilter === "week") {
+    const sevenDaysFromNow = now.getTime() + 7 * 24 * 60 * 60 * 1000
+    return dueAt.getTime() >= now.getTime() && dueAt.getTime() <= sevenDaysFromNow
+  }
+
+  return true
+}
+
+function compareDueThenUpdated(left: AssignmentItem, right: AssignmentItem) {
+  if (left.is_submitted !== right.is_submitted) return left.is_submitted ? 1 : -1
+
+  const leftDue = parseIsoDate(left.due_at_iso)?.getTime() ?? null
+  const rightDue = parseIsoDate(right.due_at_iso)?.getTime() ?? null
+  if (leftDue == null && rightDue == null) {
+    return right.latest_session_updated_at - left.latest_session_updated_at
+  }
+  if (leftDue == null) return 1
+  if (rightDue == null) return -1
+  return leftDue - rightDue
+}
+
+function dueSummary(assignment: AssignmentItem, dueAt: Date | null) {
+  if (assignment.is_submitted) {
+    const submittedAt = parseIsoDate(assignment.submitted_at)
+    return submittedAt ? `Submitted ${format(submittedAt, "MMM d, yyyy")}` : "Submitted"
+  }
+
+  if (!dueAt) return "No due date"
+  if (assignment.is_overdue) return `Overdue ${formatDistanceToNow(dueAt, { addSuffix: true })}`
+  return `Due ${formatDistanceToNow(dueAt, { addSuffix: true })}`
+}
+
 export default function AssignmentsPage() {
   const [searchQuery, setSearchQuery] = useState("")
   const [activeTab, setActiveTab] = useState("all")
+  const [selectedCourse, setSelectedCourse] = useState("all")
+  const [priorityFilter, setPriorityFilter] = useState<PriorityFilter>("all")
+  const [dueFilter, setDueFilter] = useState<DueFilter>("all")
+  const [hasAttachmentsOnly, setHasAttachmentsOnly] = useState(false)
+  const [sortMode, setSortMode] = useState<SortMode>("due")
   const [assignments, setAssignments] = useState<AssignmentItem[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [errorText, setErrorText] = useState<string | null>(null)
@@ -161,8 +255,14 @@ export default function AssignmentsPage() {
     [loadAssignments],
   )
 
+  const courseOptions = useMemo(() => {
+    return Array.from(new Set(assignments.map(courseNameForFilter))).sort((left, right) =>
+      left.localeCompare(right),
+    )
+  }, [assignments])
+
   const filteredAssignments = useMemo(() => {
-    return assignments.filter((assignment) => {
+    const filtered = assignments.filter((assignment) => {
       const query = searchQuery.trim().toLowerCase()
       const matchesSearch =
         query.length === 0 ||
@@ -176,9 +276,54 @@ export default function AssignmentsPage() {
           : activeTab === "completed"
           ? assignment.is_submitted
           : true
-      return matchesSearch && matchesTab
+      const matchesCourse =
+        selectedCourse === "all" || courseNameForFilter(assignment) === selectedCourse
+      const matchesPriority =
+        priorityFilter === "all" || assignment.priority === priorityFilter
+      const matchesAttachments = !hasAttachmentsOnly || assignment.attachment_count > 0
+      return (
+        matchesSearch &&
+        matchesTab &&
+        matchesCourse &&
+        matchesPriority &&
+        matchesDueFilter(assignment, dueFilter) &&
+        matchesAttachments
+      )
     })
-  }, [activeTab, assignments, searchQuery])
+
+    const sorted = filtered.slice()
+    sorted.sort((left, right) => {
+      if (sortMode === "updated") {
+        return right.latest_session_updated_at - left.latest_session_updated_at
+      }
+      if (sortMode === "priority") {
+        const priorityDifference =
+          priorityWeight(left.priority) - priorityWeight(right.priority)
+        return priorityDifference || compareDueThenUpdated(left, right)
+      }
+      if (sortMode === "course") {
+        const courseDifference = courseNameForFilter(left).localeCompare(
+          courseNameForFilter(right),
+        )
+        return courseDifference || compareDueThenUpdated(left, right)
+      }
+      if (sortMode === "title") {
+        return left.title.localeCompare(right.title)
+      }
+      return compareDueThenUpdated(left, right)
+    })
+
+    return sorted
+  }, [
+    activeTab,
+    assignments,
+    dueFilter,
+    hasAttachmentsOnly,
+    priorityFilter,
+    searchQuery,
+    selectedCourse,
+    sortMode,
+  ])
 
   const pendingCount = assignments.filter(
     (assignment) => !assignment.is_submitted,
@@ -189,6 +334,18 @@ export default function AssignmentsPage() {
   const pendingDeleteAssignment = pendingDeleteAssignmentId
     ? assignments.find((assignment) => assignment.id === pendingDeleteAssignmentId) ?? null
     : null
+  const activeFilterCount =
+    (selectedCourse !== "all" ? 1 : 0) +
+    (priorityFilter !== "all" ? 1 : 0) +
+    (dueFilter !== "all" ? 1 : 0) +
+    (hasAttachmentsOnly ? 1 : 0)
+
+  const resetFilters = useCallback(() => {
+    setSelectedCourse("all")
+    setPriorityFilter("all")
+    setDueFilter("all")
+    setHasAttachmentsOnly(false)
+  }, [])
 
   const requestDeleteAssignment = useCallback((assignment: AssignmentItem) => {
     setPendingDeleteAssignmentId(assignment.id)
@@ -249,8 +406,8 @@ export default function AssignmentsPage() {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-4">
-          <div className="relative max-w-sm flex-1">
+        <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_auto_auto_auto]">
+          <div className="relative min-w-0">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
             <Input
               type="search"
@@ -260,23 +417,108 @@ export default function AssignmentsPage() {
               onChange={(event) => setSearchQuery(event.target.value)}
             />
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="icon" aria-label="Assignment filters">
-              <Filter className="h-4 w-4" />
-            </Button>
-          </div>
+
+          <Select value={selectedCourse} onValueChange={setSelectedCourse}>
+            <SelectTrigger className="w-full lg:w-[190px]" aria-label="Filter by course">
+              <SelectValue placeholder="All courses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All courses</SelectItem>
+              {courseOptions.map((course) => (
+                <SelectItem key={course} value={course}>
+                  {course}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+
+          <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
+            <SelectTrigger className="w-full lg:w-[180px]" aria-label="Sort assignments">
+              <ArrowUpDown className="h-4 w-4" />
+              <SelectValue placeholder="Sort" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="due">Due soon</SelectItem>
+              <SelectItem value="updated">Recently updated</SelectItem>
+              <SelectItem value="priority">Priority</SelectItem>
+              <SelectItem value="course">Course</SelectItem>
+              <SelectItem value="title">Title A-Z</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" className="justify-center" aria-label="Assignment filters">
+                <Filter className="h-4 w-4" />
+                <span>Filters</span>
+                {activeFilterCount > 0 ? (
+                  <Badge variant="secondary" className="ml-1 px-1.5">
+                    {activeFilterCount}
+                  </Badge>
+                ) : null}
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-64">
+              <DropdownMenuLabel>Priority</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={priorityFilter}
+                onValueChange={(value) => setPriorityFilter(value as PriorityFilter)}
+              >
+                <DropdownMenuRadioItem value="all">Any priority</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="High">High</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="Medium">Medium</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="Low">Low</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Due date</DropdownMenuLabel>
+              <DropdownMenuRadioGroup
+                value={dueFilter}
+                onValueChange={(value) => setDueFilter(value as DueFilter)}
+              >
+                <DropdownMenuRadioItem value="all">Any due date</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="overdue">Overdue</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="today">Due today</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="week">Due this week</DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="no-date">No due date</DropdownMenuRadioItem>
+              </DropdownMenuRadioGroup>
+              <DropdownMenuSeparator />
+              <DropdownMenuCheckboxItem
+                checked={hasAttachmentsOnly}
+                onCheckedChange={(checked) => setHasAttachmentsOnly(checked === true)}
+                onSelect={(event) => event.preventDefault()}
+              >
+                Has attachments
+              </DropdownMenuCheckboxItem>
+              <DropdownMenuSeparator />
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                className="w-full justify-start"
+                disabled={activeFilterCount === 0}
+                onClick={resetFilters}
+              >
+                Clear filters
+              </Button>
+            </DropdownMenuContent>
+          </DropdownMenu>
         </div>
 
         {errorText ? (
           <p className="text-sm text-destructive">{errorText}</p>
         ) : null}
 
-        <Tabs defaultValue="all" className="w-full" onValueChange={setActiveTab}>
-          <TabsList>
-            <TabsTrigger value="all">All ({assignments.length})</TabsTrigger>
-            <TabsTrigger value="pending">Pending ({pendingCount})</TabsTrigger>
-            <TabsTrigger value="completed">Completed ({completedCount})</TabsTrigger>
-          </TabsList>
+        <Tabs value={activeTab} className="w-full" onValueChange={setActiveTab}>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <TabsList>
+              <TabsTrigger value="all">All ({assignments.length})</TabsTrigger>
+              <TabsTrigger value="pending">Pending ({pendingCount})</TabsTrigger>
+              <TabsTrigger value="completed">Completed ({completedCount})</TabsTrigger>
+            </TabsList>
+            <p className="text-sm text-muted-foreground">
+              Showing {filteredAssignments.length} of {assignments.length}
+            </p>
+          </div>
           <TabsContent value="all" className="mt-4">
             <AssignmentList
               assignments={filteredAssignments}
@@ -424,17 +666,42 @@ function AssignmentList({
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.2, ease: EASE_OUT }}
             >
-              <Card className="flex h-full flex-col transition-shadow hover:shadow-md">
-                <CardHeader className="grid grid-cols-[minmax(0,1fr)_auto] items-start gap-2 space-y-0 pb-2">
-                  <div className="min-w-0 space-y-1">
+              <Card
+                className={cn(
+                  "flex h-full overflow-hidden border-l-4 transition-shadow hover:shadow-md",
+                  priorityRailTone(assignment.priority),
+                )}
+              >
+                <CardHeader className="space-y-3 pb-3">
+                  <div className="flex items-start justify-between gap-3">
                     <Tooltip>
                       <TooltipTrigger asChild>
-                        <Badge variant="outline" className="mb-2 max-w-[32ch] shrink justify-start">
+                        <Badge variant="outline" className="max-w-[32ch] shrink justify-start">
                           <span className="block max-w-full truncate">{courseName}</span>
                         </Badge>
                       </TooltipTrigger>
                       <TooltipContent>{fullCourseName}</TooltipContent>
                     </Tooltip>
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        "shrink-0",
+                        assignment.is_submitted
+                          ? "border-emerald-200/80 bg-emerald-50 text-emerald-700"
+                          : assignment.is_overdue
+                          ? "border-red-200/80 bg-red-50 text-red-700"
+                          : "border-slate-200/80 bg-slate-50 text-slate-700",
+                      )}
+                    >
+                      {assignment.is_submitted
+                        ? "Submitted"
+                        : assignment.is_overdue
+                        ? "Overdue"
+                        : "Open"}
+                    </Badge>
+                  </div>
+
+                  <div className="min-w-0 space-y-2">
                     {assignment.assignment_id ? (
                       <Link href={`/dashboard/assignments/${encodeURIComponent(assignment.assignment_id)}`}>
                         <CardTitle className="line-clamp-2 break-words text-base leading-snug hover:text-primary hover:underline" title={assignment.title}>
@@ -446,56 +713,38 @@ function AssignmentList({
                         {assignment.title}
                       </CardTitle>
                     )}
-                    <CardDescription className="text-xs">
-                      Attachments: {assignment.attachment_count}
+                    <CardDescription className="flex items-center gap-1 text-xs">
+                      <Paperclip className="h-3.5 w-3.5" />
+                      <span>{assignment.attachment_count} attachments</span>
                     </CardDescription>
                   </div>
-                  <div className="flex shrink-0 items-center gap-1 self-start">
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          aria-label={submitTooltip}
-                          disabled={!assignment.assignment_id || isUpdating || isDeleting}
-                          onClick={() => void onToggleSubmitted(assignment)}
-                        >
-                          {isUpdating ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : assignment.is_submitted ? (
-                            <RotateCcw className="h-4 w-4" />
-                          ) : (
-                            <CheckCircle2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>{submitTooltip}</TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="icon"
-                          className="text-destructive hover:text-destructive"
-                          aria-label="Delete assignment"
-                          disabled={!assignment.assignment_id || isDeleting}
-                          onClick={() => onRequestDeleteAssignment(assignment)}
-                        >
-                          {isDeleting ? (
-                            <LoaderCircle className="h-4 w-4 animate-spin" />
-                          ) : (
-                            <Trash2 className="h-4 w-4" />
-                          )}
-                        </Button>
-                      </TooltipTrigger>
-                      <TooltipContent>Delete assignment</TooltipContent>
-                    </Tooltip>
-                  </div>
                 </CardHeader>
-                <CardContent className="mt-auto space-y-3 pt-4">
+                <CardContent className="mt-auto space-y-4 pt-0">
+                  <div
+                    className={cn(
+                      "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
+                      assignment.is_submitted
+                        ? "border-emerald-200/80 bg-emerald-50 text-emerald-800"
+                        : assignment.is_overdue
+                        ? "border-red-200/80 bg-red-50 text-red-700"
+                        : "border-border/70 bg-muted/20 text-muted-foreground",
+                    )}
+                  >
+                    {assignment.is_submitted ? (
+                      <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+                    ) : (
+                      <CalendarIcon className="mt-0.5 h-4 w-4 shrink-0" />
+                    )}
+                    <div className="min-w-0">
+                      <p className="font-medium">{dueSummary(assignment, dueAt)}</p>
+                      {!assignment.is_submitted && dueAt ? (
+                        <p className="text-xs opacity-80">
+                          {format(dueAt, "MMM d, yyyy h:mm a")}
+                        </p>
+                      ) : null}
+                    </div>
+                  </div>
+
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant="outline" className={cn(priorityTone(assignment.priority))}>
                       {assignment.priority}
@@ -505,28 +754,64 @@ function AssignmentList({
                     </Badge>
                   </div>
 
-                  {assignment.is_submitted ? (
-                    <div className="inline-flex w-fit items-center gap-1 rounded-md border border-emerald-300 bg-emerald-50 px-2 py-1 text-sm font-semibold text-emerald-800">
-                      <CheckCircle2 className="h-4 w-4" />
-                      <span>Submitted</span>
+                  <div className="flex items-center justify-between gap-2 border-t border-border/70 pt-3">
+                    {assignment.assignment_id ? (
+                      <Button asChild variant="outline" size="sm">
+                        <Link href={`/dashboard/assignments/${encodeURIComponent(assignment.assignment_id)}`}>
+                          Open
+                        </Link>
+                      </Button>
+                    ) : (
+                      <Button variant="outline" size="sm" disabled>
+                        Open
+                      </Button>
+                    )}
+
+                    <div className="flex items-center gap-1">
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            aria-label={submitTooltip}
+                            disabled={!assignment.assignment_id || isUpdating || isDeleting}
+                            onClick={() => void onToggleSubmitted(assignment)}
+                          >
+                            {isUpdating ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : assignment.is_submitted ? (
+                              <RotateCcw className="h-4 w-4" />
+                            ) : (
+                              <CheckCircle2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>{submitTooltip}</TooltipContent>
+                      </Tooltip>
+
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            className="text-destructive hover:text-destructive"
+                            aria-label="Delete assignment"
+                            disabled={!assignment.assignment_id || isDeleting}
+                            onClick={() => onRequestDeleteAssignment(assignment)}
+                          >
+                            {isDeleting ? (
+                              <LoaderCircle className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Delete assignment</TooltipContent>
+                      </Tooltip>
                     </div>
-                  ) : (
-                    <div
-                      className={cn(
-                        "flex items-center gap-1 text-sm",
-                        assignment.is_overdue ? "text-destructive" : "text-muted-foreground",
-                      )}
-                    >
-                      <CalendarIcon className="h-4 w-4" />
-                      {dueAt ? (
-                        <span>
-                          {format(dueAt, "MMM d, yyyy h:mm a")} ({formatDistanceToNow(dueAt, { addSuffix: true })})
-                        </span>
-                      ) : (
-                        <span>No due date available</span>
-                      )}
-                    </div>
-                  )}
+                  </div>
                 </CardContent>
               </Card>
             </motion.div>

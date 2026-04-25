@@ -42,9 +42,10 @@ Events are emitted in this order (with repeats where noted):
 
 1. `run.started`
 2. `run.stage` (for deterministic stage transitions)
-3. `run.delta` (repeated while model output streams)
-4. `run.stage` (`validating_output`)
-5. `run.completed`
+3. `run.stage` (`classifying_assignment`)
+4. `run.delta` (repeated while model output streams)
+5. `run.stage` (`validating_output`)
+6. `run.completed`
 
 Failure path:
 
@@ -62,7 +63,7 @@ Failure path:
 ### `run.stage`
 - Purpose: stage-level progress updates.
 - Includes:
-  - `stage` (`preparing_payload`, `extracting_pdf`, `calling_agent`, `validating_output`, etc.)
+  - `stage` (`preparing_payload`, `extracting_pdf`, `calling_agent`, `validating_output`, `classifying_assignment`, etc.)
   - `progress_percent`
   - `status_message`
 
@@ -82,6 +83,7 @@ Failure path:
 - Purpose: terminal success event.
 - Includes:
   - `guideMarkdown` (full final markdown body)
+  - `assignment_category` (`coding`, `mathematics`, `science`, `speech`, `essay`, or `general`)
   - `thinking_content` (optional full streamed thinking trace)
   - `stage` (`completed`)
   - `progress_percent` (`100`)
@@ -104,6 +106,8 @@ The orchestrator includes a dedicated streaming markdown path:
 - Emits provider content chunks as they arrive instead of buffering a single response object.
 - Streams optional provider reasoning chunks separately when thinking output is enabled.
 - Final output is normalized and validated before `run.completed`.
+- After PDF/context extraction and before guide generation, the service performs a best-effort lightweight assignment classification call.
+  Classification failures emit `assignment_category: "general"` instead of failing the completed guide.
 
 This keeps the dashboard rendering progressively for long-running guide generation.
 

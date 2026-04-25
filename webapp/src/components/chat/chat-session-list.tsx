@@ -17,7 +17,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
-import { formatDateTime } from "@/lib/chat-utils"
+import { assignmentCategoryLabel, assignmentCategoryTone, formatDateTime } from "@/lib/chat-utils"
 import { type ChatSessionStatus } from "@/lib/chat-types"
 
 const EASE_OUT = [0.22, 1, 0.36, 1] as const
@@ -26,6 +26,7 @@ type ChatSessionListItemResponse = {
   session_id: string
   assignment_uuid: string
   title: string
+  assignment_category?: string | null
   last_user_message?: string | null
   status: ChatSessionStatus
   created_at: number
@@ -438,6 +439,8 @@ export function ChatSessionList() {
                                 item.last_user_message.trim().length > 0
                                   ? item.last_user_message.trim()
                                   : "Chat Session"
+                              const categoryLabel = assignmentCategoryLabel(item.assignment_category)
+                              const categoryTone = assignmentCategoryTone(item.assignment_category)
                               const isDeleting = deletingSessionIds.has(item.session_id)
 
                               return (
@@ -469,9 +472,19 @@ export function ChatSessionList() {
                                       disabled={isDeleting}
                                     >
                                       <div className="flex flex-wrap items-start justify-between gap-2">
-                                        <p className="truncate text-sm font-medium text-foreground">
-                                          {sessionLabel}
-                                        </p>
+                                        <div className="min-w-0 flex flex-wrap items-center gap-1.5">
+                                          <p className="truncate text-sm font-medium text-foreground">
+                                            {sessionLabel}
+                                          </p>
+                                          {categoryLabel ? (
+                                            <Badge
+                                              variant="outline"
+                                              className={`shrink-0 px-2 py-0.5 text-[10px] ${categoryTone}`}
+                                            >
+                                              {categoryLabel}
+                                            </Badge>
+                                          ) : null}
+                                        </div>
                                         <Badge variant="outline" className="capitalize">
                                           {item.status}
                                         </Badge>

@@ -58,6 +58,7 @@ def _stream_headstart_agent_markdown(
 
 def _stream_headstart_chat_answer(
     assignment_payload: dict,
+    assignment_category: str,
     guide_markdown: str,
     chat_history: list[dict],
     retrieval_context: list[dict],
@@ -72,6 +73,7 @@ def _stream_headstart_chat_answer(
 
     return stream_headstart_chat_answer(
         assignment_payload=assignment_payload,
+        assignment_category=assignment_category,
         guide_markdown=guide_markdown,
         chat_history=chat_history,
         retrieval_context=retrieval_context,
@@ -81,6 +83,13 @@ def _stream_headstart_chat_answer(
         assignment_pdf_text=assignment_pdf_text,
         user_attachments_context=user_attachments_context,
     )
+
+
+def _classify_assignment(payload: dict, pdf_text: str) -> str:
+    """Lazy import to keep classifier dependencies off import-time paths."""
+    from .classification_service import classify_assignment
+
+    return classify_assignment(payload, pdf_text)
 
 
 def run_agent_workflow(req: RunAgentRequest, route_path: str) -> dict:
@@ -223,6 +232,16 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
         yield _build_event(
             "run.stage",
             {
+                "stage": "classifying_assignment",
+                "progress_percent": 48,
+                "status_message": "Classifying assignment",
+            },
+        )
+        assignment_category = _classify_assignment(req.payload, pdf_text)
+
+        yield _build_event(
+            "run.stage",
+            {
                 "stage": "calling_agent",
                 "progress_percent": 56,
                 "status_message": "Calling AI generation service",
@@ -284,12 +303,14 @@ def stream_run_agent_workflow(req: RunAgentRequest, route_path: str) -> Generato
         ).model_dump()
 
         logger.info(
-            "Streaming agent completed | markdown_len=%d reasoning_len=%d",
+            "Streaming agent completed | markdown_len=%d reasoning_len=%d assignment_category=%s",
             len(guide_markdown),
             reasoning_char_count,
+            assignment_category,
         )
         completed_payload = {
             **result,
+            "assignment_category": assignment_category,
             "stage": "completed",
             "progress_percent": 100,
             "status_message": "Guide ready",
@@ -421,6 +442,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
 
         for chunk in _stream_headstart_chat_answer(
             assignment_payload=req.assignment_payload,
+            assignment_category=req.assignment_category or "",
             guide_markdown=req.guide_markdown,
             chat_history=[item.model_dump() for item in req.chat_history],
             retrieval_context=[item.model_dump() for item in req.retrieval_context],

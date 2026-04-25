@@ -13,7 +13,6 @@ export const runtime = "nodejs";
 const CHAT_UPLOAD_BUCKET =
   (process.env.SUPABASE_ASSIGNMENT_PDF_BUCKET ?? "assignment-pdfs");
 const CHAT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
-const CHAT_UPLOAD_SIGNED_URL_TTL = 600; // seconds
 
 function bufferToHex(buffer: ArrayBuffer) {
   return Array.from(new Uint8Array(buffer))

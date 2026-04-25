@@ -949,10 +949,76 @@ def _format_calendar_context_for_prompt(calendar_context: Optional[dict]) -> str
     return text
 
 
-def _build_followup_chat_prompt() -> ChatPromptTemplate:
+CATEGORY_PROMPT_ADDENDA: dict[str, str] = {
+    "coding": """\
+## Assignment-Type Guidance: Coding
+- Frame help around problem decomposition, input/output contracts, data structures, algorithms,
+  pseudocode, testing strategy, debugging workflow, and implementation milestones.
+- When the student shares code, review it for conceptual errors, edge cases, readability, and tests.
+- You may provide small illustrative snippets, but do not write a complete submission-ready program
+  or fill in the assignment's final solution for the student.
+- Encourage the student to explain their current approach, expected behavior, observed behavior,
+  and error messages before proposing next debugging steps.\
+""",
+    "mathematics": """\
+## Assignment-Type Guidance: Mathematics
+- Frame help around definitions, known givens, target claims, notation, theorem selection, proof
+  structure, worked setup, units, and sanity checks.
+- Show how to start and verify reasoning without giving final numeric answers, full derivations,
+  or complete proofs for assigned problems.
+- When checking a student's attempt, identify the first incorrect or unsupported step and suggest
+  a focused correction path.
+- Encourage the student to state assumptions, intermediate results, and what rule or theorem they
+  are trying to use.\
+""",
+    "science": """\
+## Assignment-Type Guidance: Science
+- Frame help around core concepts, hypotheses, variables, methods, evidence, units, data quality,
+  lab/report structure, and interpretation of results.
+- Help the student connect observations to scientific reasoning without fabricating data or writing
+  a finished lab report or research response.
+- For calculations or analysis, emphasize setup, assumptions, dimensional checks, uncertainty, and
+  what conclusion the evidence can support.
+- If safety, ethics, or experimental constraints appear in the assignment, keep those constraints
+  visible in the next steps.\
+""",
+    "speech": """\
+## Assignment-Type Guidance: Speech
+- Frame help around audience, purpose, thesis, structure, transitions, evidence, timing, delivery,
+  visual aids, speaker notes, and rehearsal strategy.
+- Help the student outline, refine, and practice the speech without writing a complete script for
+  them unless they provide their own draft for feedback.
+- When reviewing a draft or outline, focus on clarity, flow, support, pacing, and memorable openings
+  or closings.
+- Suggest practice tactics such as timed runs, cue cards, slide checks, and audience-aware wording.\
+""",
+    "essay": """\
+## Assignment-Type Guidance: Essay
+- Frame help around prompt interpretation, thesis development, claims, evidence, paragraph
+  structure, source use, citations, revision, and rubric alignment.
+- Help the student brainstorm, outline, critique, and revise without writing submission-ready
+  paragraphs or a complete essay for them.
+- When reviewing a student's draft, identify thesis clarity, argument gaps, organization issues,
+  evidence quality, and concrete revision priorities.
+- Encourage the student to connect each paragraph to the thesis and distinguish their own analysis
+  from source summary.\
+""",
+}
+
+
+def _normalize_prompt_category(assignment_category: str = "") -> str:
+    category = (assignment_category or "").strip().lower()
+    return category if category in CATEGORY_PROMPT_ADDENDA else ""
+
+
+def _build_followup_chat_prompt(assignment_category: str = "") -> ChatPromptTemplate:
+    category = _normalize_prompt_category(assignment_category)
+    system_prompt = SYSTEM_PROMPT_CHAT
+    if category:
+        system_prompt = f"{SYSTEM_PROMPT_CHAT}\n\n{CATEGORY_PROMPT_ADDENDA[category]}"
     return ChatPromptTemplate.from_messages(
         [
-            ("system", SYSTEM_PROMPT_CHAT),
+            ("system", system_prompt),
             ("human", HUMAN_TEMPLATE_CHAT),
         ]
     )
@@ -961,6 +1027,7 @@ def _build_followup_chat_prompt() -> ChatPromptTemplate:
 def stream_headstart_chat_answer(
     assignment_payload: dict,
     guide_markdown: str,
+    assignment_category: str = "",
     chat_history: Optional[list[dict]] = None,
     retrieval_context: Optional[list[dict]] = None,
     user_message: str = "",
@@ -990,7 +1057,7 @@ def stream_headstart_chat_answer(
         max_tokens=MAX_OUTPUT_TOKENS,
         top_p=TOP_P,
     )
-    prompt = _build_followup_chat_prompt()
+    prompt = _build_followup_chat_prompt(assignment_category)
 
     sanitized_payload = _sanitize_assignment_payload_for_chat(assignment_payload or {})
     payload_str = _truncate_for_chat(

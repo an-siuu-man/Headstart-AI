@@ -89,6 +89,7 @@ export type ChatSessionStage =
   | "calling_agent"
   | "streaming_output"
   | "validating_output"
+  | "classifying_assignment"
   | "parsing_response"
   | "chat_streaming"
   | "completed"
@@ -119,6 +120,7 @@ export type ChatSessionDto = {
   progress_percent: number;
   status_message: string;
   streamed_guide_markdown: string;
+  assignment_category: string | null;
   result: unknown | null;
   error: string | null;
   payload: AssignmentPayload;
@@ -140,6 +142,7 @@ export type PersistedSessionSnapshot = {
   createdAt: number;
   updatedAt: number;
   status: ChatSessionStatus;
+  assignmentCategory: string | null;
   payload: AssignmentPayload;
   messages: ChatMessageDto[];
   guideMarkdown: string;
@@ -152,6 +155,7 @@ export type RuntimeSessionState = {
   progressPercent: number;
   statusMessage: string;
   streamedGuideMarkdown: string;
+  assignmentCategory?: string | null;
   result?: unknown;
   error?: string;
   updatedAt: number;
@@ -165,6 +169,7 @@ export function buildSessionDto(
   const stage = runtime?.stage ?? (status === "completed" ? "completed" : "queued");
   const streamedGuideMarkdown =
     runtime?.streamedGuideMarkdown || snapshot.guideMarkdown || "";
+  const assignmentCategory = runtime?.assignmentCategory ?? snapshot.assignmentCategory ?? null;
 
   let progress = runtime?.progressPercent;
   if (progress == null) {
@@ -199,6 +204,7 @@ export function buildSessionDto(
     progress_percent: Math.max(0, Math.min(100, Math.round(progress))),
     status_message: statusMessage,
     streamed_guide_markdown: streamedGuideMarkdown,
+    assignment_category: assignmentCategory,
     result,
     error,
     payload: snapshot.payload,

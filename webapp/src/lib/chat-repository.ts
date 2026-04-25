@@ -69,6 +69,7 @@ type DbChatSession = {
   user_id: string;
   assignment_uuid: string;
   title?: string | null;
+  assignment_category?: string | null;
   status: ChatSessionStatus;
   created_at: string;
   updated_at: string;
@@ -359,6 +360,7 @@ export type UserChatSessionListItem = {
   sessionId: string;
   assignmentUuid: string;
   title: string;
+  assignmentCategory: string | null;
   lastUserMessage: string | null;
   status: ChatSessionStatus;
   createdAt: number;
@@ -398,6 +400,21 @@ function normalizePayload(payload: AssignmentPayload): AssignmentPayload {
     courseName: toOptionalString(payload.courseName) ?? undefined,
     source: normalizeSource(payload.source),
   };
+}
+
+function normalizeAssignmentCategory(value: string | null | undefined) {
+  const category = toOptionalString(value)?.toLowerCase() ?? null;
+  if (
+    category === "coding" ||
+    category === "mathematics" ||
+    category === "science" ||
+    category === "speech" ||
+    category === "essay" ||
+    category === "general"
+  ) {
+    return category;
+  }
+  return null;
 }
 
 async function upsertSingle<T>(input: {
@@ -1013,7 +1030,7 @@ async function getPersistedSessionSnapshotWithMessageLimit(
     table: "chat_sessions",
     query: {
       id: eq(sessionId),
-      select: "id,user_id,assignment_uuid,status,created_at,updated_at",
+      select: "id,user_id,assignment_uuid,assignment_category,status,created_at,updated_at",
       limit: 1,
     },
   });
@@ -1087,6 +1104,7 @@ async function getPersistedSessionSnapshotWithMessageLimit(
     createdAt: toEpoch(session.created_at),
     updatedAt: toEpoch(session.updated_at),
     status: session.status,
+    assignmentCategory: normalizeAssignmentCategory(session.assignment_category),
     payload,
     messages: allMessages.map((row) => toMessageDto(row)),
     guideMarkdown,
@@ -1237,7 +1255,7 @@ export async function listPersistedChatSessionsForUser(
     table: "chat_sessions",
     query: {
       user_id: eq(userId),
-      select: "id,user_id,assignment_uuid,title,status,created_at,updated_at",
+      select: "id,user_id,assignment_uuid,title,assignment_category,status,created_at,updated_at",
       order: "updated_at.desc",
       limit: boundedLimit,
     },
@@ -1349,6 +1367,7 @@ export async function listPersistedChatSessionsForUser(
         sessionId: session.id,
         assignmentUuid: session.assignment_uuid,
         title: toOptionalString(session.title) ?? assignmentTitle,
+        assignmentCategory: normalizeAssignmentCategory(session.assignment_category),
         lastUserMessage: lastUserMessageBySessionId.get(session.id) ?? null,
         status: session.status,
         createdAt,
@@ -1807,6 +1826,20 @@ export async function updateChatSessionStatus(
   });
 }
 
+export async function updateChatSessionCategory(sessionId: string, category: string) {
+  const normalized = normalizeAssignmentCategory(category) ?? "general";
+  return patchSingle<DbChatSession>({
+    table: "chat_sessions",
+    query: {
+      id: eq(sessionId),
+    },
+    patch: {
+      assignment_category: normalized,
+      updated_at: nowIso(),
+    },
+  });
+}
+
 async function getNextMessageIndex(sessionId: string) {
   const latest = await selectFirst<DbChatMessage>({
     table: "chat_messages",
@@ -1915,6 +1948,7 @@ export async function getSessionGuideAndHistory(sessionId: string) {
     userId: snapshot.userId,
     assignmentUuid: snapshot.assignmentUuid,
     assignmentRecordId: snapshot.assignmentRecordId ?? null,
+    assignmentCategory: snapshot.assignmentCategory,
   };
 }
 
@@ -1937,6 +1971,7 @@ export async function getSessionGuideAndRecentHistory(
     userId: snapshot.userId,
     assignmentUuid: snapshot.assignmentUuid,
     assignmentRecordId: snapshot.assignmentRecordId ?? null,
+    assignmentCategory: snapshot.assignmentCategory,
   };
 }
 
