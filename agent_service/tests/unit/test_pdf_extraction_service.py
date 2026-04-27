@@ -23,7 +23,7 @@ class TestPdfExtractionService(unittest.TestCase):
 
         out = format_pdf_extractions_for_prompt([extraction], source="assignment")
 
-        self.assertIn('<attachment name="spec.pdf" source="assignment">', out)
+        self.assertIn('<attachment name="spec.pdf" source="assignment" type="pdf">', out)
         self.assertIn("Assignment requirements", out)
 
     def test_collect_visual_signals_from_extractions_merges_duplicates(self):
@@ -81,7 +81,7 @@ class TestPdfExtractionService(unittest.TestCase):
         self.assertEqual(extraction.pages[1].method, "ocr")
         self.assertGreater(len(extraction.pages[0].blocks), 0)
         self.assertEqual(len(extraction.visual_signals), 1)
-        self.assertEqual(extraction.quality.strategy, "native_ocr_dual_pass")
+        self.assertEqual(extraction.quality.strategy, "native_vlm_dual_pass")
         self.assertFalse(extraction.quality.docling_available)
 
     def test_extract_pdf_extractions_with_file_map_uses_pre_supplied_extractions(self):

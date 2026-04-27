@@ -23,7 +23,7 @@ import {
 } from "@/lib/chat-repository";
 import { supabaseStorageCreateSignedUrl } from "@/lib/supabase-rest";
 import { getSharedAssignmentCalendarContextForChat } from "@/lib/assignment-calendar-context";
-import { type AssignmentPayload } from "@/lib/chat-types";
+import { type AssignmentPayload, type ChatAttachment } from "@/lib/chat-types";
 import { type SseMessage, readSseStream } from "@/lib/sse";
 import { toOptionalString } from "@/lib/utils";
 import { retrieveLexicalContext } from "@/lib/rag/lexical-retriever";
@@ -499,7 +499,7 @@ async function runFollowupChat(input: {
   assistantMessageId: string;
   userMessageContent: string;
   requestUrl: string;
-  attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
+  attachments?: ChatAttachment[];
 }) {
   const { sessionId, assistantMessageId, userMessageContent, requestUrl, attachments } = input;
 
@@ -607,23 +607,35 @@ async function runFollowupChat(input: {
       resolvedAssignmentRecordId = resolvedContext.assignment_id ?? null;
     }
 
-    // Generate signed URLs for user-attached PDFs
+    // Generate signed URLs for user-attached files, routing to the correct bucket by kind
     const userPdfFiles: Array<{ filename: string; storage_url: string; file_sha256: string }> = [];
+    const userImageFiles: Array<{ filename: string; mime_type: string; storage_url: string; file_sha256: string }> = [];
     if (attachments && attachments.length > 0) {
-      const chatUploadBucket = process.env.SUPABASE_ASSIGNMENT_PDF_BUCKET ?? "assignment-pdfs";
+      const pdfBucket = process.env.SUPABASE_ASSIGNMENT_PDF_BUCKET ?? "assignment-pdfs";
+      const imageBucket = process.env.SUPABASE_ASSIGNMENT_IMAGE_BUCKET ?? pdfBucket;
       const signedUrlTtl = 600;
       for (const attachment of attachments) {
+        const bucket = attachment.kind === "image" ? imageBucket : pdfBucket;
         try {
           const signedUrl = await supabaseStorageCreateSignedUrl({
-            bucket: chatUploadBucket,
+            bucket,
             path: attachment.storage_path,
             expiresInSeconds: signedUrlTtl,
           });
-          userPdfFiles.push({
-            filename: attachment.filename,
-            storage_url: signedUrl,
-            file_sha256: attachment.file_sha256,
-          });
+          if (attachment.kind === "image") {
+            userImageFiles.push({
+              filename: attachment.filename,
+              mime_type: attachment.mime_type,
+              storage_url: signedUrl,
+              file_sha256: attachment.file_sha256,
+            });
+          } else {
+            userPdfFiles.push({
+              filename: attachment.filename,
+              storage_url: signedUrl,
+              file_sha256: attachment.file_sha256,
+            });
+          }
         } catch (err) {
           console.error(`[chat-runner] Failed to sign URL for attachment "${attachment.filename}":`, err);
         }
@@ -688,6 +700,7 @@ async function runFollowupChat(input: {
         thinking_mode: false,
         calendar_context: calendarContext,
         ...(allPdfFiles.length > 0 ? { user_pdf_files: allPdfFiles } : {}),
+        ...(userImageFiles.length > 0 ? { user_image_files: userImageFiles } : {}),
       }),
     );
 
@@ -873,7 +886,7 @@ export function startFollowupChatRun(input: {
   assistantMessageId: string;
   userMessageContent: string;
   requestUrl: string;
-  attachments?: Array<{ filename: string; file_sha256: string; storage_path: string }>;
+  attachments?: ChatAttachment[];
 }) {
   void runFollowupChat(input);
 }

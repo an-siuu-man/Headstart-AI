@@ -176,12 +176,12 @@ def extract_pdf_extraction_from_pdf_bytes(
     )
 
     quality = PdfExtractionQuality(
-        strategy="native_ocr_dual_pass",
+        strategy="native_vlm_dual_pass",
         docling_available=False,
         native_chars=len(full_text),
         docling_chars=0,
         reconciled_chars=len(full_text),
-        notes=["source=native_pymupdf_ocr"],
+        notes=["source=native_pymupdf_vlm"],
     )
 
     return PdfExtraction(

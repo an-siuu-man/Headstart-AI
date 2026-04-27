@@ -1,15 +1,15 @@
 "use client"
 
-import { memo, useDeferredValue, useMemo } from "react"
+import { memo, useDeferredValue, useEffect, useMemo, useState } from "react"
 import { format, isSameDay } from "date-fns"
 import { motion } from "framer-motion"
-import { FileText } from "lucide-react"
+import { FileText, ImageIcon } from "lucide-react"
 import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 
-import { type ChatMessageDto } from "@/lib/chat-types"
+import { type ChatAttachment, type ChatMessageDto } from "@/lib/chat-types"
 import { removeThinkBlocks } from "@/lib/chat-utils"
 import { MARKDOWN_COMPONENTS } from "./markdown-components"
 
@@ -31,6 +31,48 @@ function formatMessageTimestamp(value: string | null | undefined) {
     return format(date, "MMM d, yyyy hh:mm a")
   }
   return format(date, "hh:mm a")
+}
+
+function ImageAttachmentThumb({ attachment }: { attachment: ChatAttachment }) {
+  const [signedUrl, setSignedUrl] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    fetch(`/api/storage/image-url?path=${encodeURIComponent(attachment.storage_path)}`)
+      .then((r) => r.ok ? r.json() : null)
+      .then((data: { url?: string } | null) => {
+        if (!cancelled && data?.url) setSignedUrl(data.url)
+      })
+      .catch(() => undefined)
+    return () => { cancelled = true }
+  }, [attachment.storage_path])
+
+  if (!signedUrl) {
+    return (
+      <span className="inline-flex items-center gap-1 rounded-md bg-zinc-600/60 px-2 py-0.5 text-[12px] text-zinc-200">
+        <ImageIcon className="h-3 w-3 shrink-0" />
+        <span className="max-w-[160px] truncate">{attachment.filename}</span>
+      </span>
+    )
+  }
+
+  return (
+    <a
+      href={signedUrl}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="inline-block rounded-md overflow-hidden border border-zinc-500/50 hover:border-zinc-400 transition-colors"
+      title={attachment.filename}
+    >
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={signedUrl}
+        alt={attachment.filename}
+        className="max-h-48 max-w-xs object-contain bg-zinc-800"
+        loading="lazy"
+      />
+    </a>
+  )
 }
 
 function ThinkingMessage({ reduceMotion }: { reduceMotion: boolean | null }) {
@@ -75,11 +117,14 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
     const raw = message.metadata?.attachments
     if (!Array.isArray(raw)) return []
     return raw.filter(
-      (a): a is { filename: string } =>
+      (a): a is ChatAttachment =>
         typeof a === "object" &&
         a !== null &&
         typeof (a as Record<string, unknown>).filename === "string",
-    )
+    ).map((a) => ({
+      ...a,
+      kind: (a.kind === "image" ? "image" : "pdf") as "pdf" | "image",
+    }))
   }, [message.metadata, message.sender_role])
 
   const assistantVisibleText = assistantThinkState?.visibleMarkdown.trim() || ""
@@ -132,16 +177,20 @@ export const ChatMessageBubble = memo(function ChatMessageBubble({
       ) : (
         <div>
           {attachments.length > 0 && (
-            <div className="mb-1.5 flex flex-wrap gap-1">
-              {attachments.map((a, i) => (
-                <span
-                  key={i}
-                  className="inline-flex items-center gap-1 rounded-md bg-zinc-600/60 px-2 py-0.5 text-[12px] text-zinc-200"
-                >
-                  <FileText className="h-3 w-3 shrink-0" />
-                  <span className="max-w-[160px] truncate">{a.filename}</span>
-                </span>
-              ))}
+            <div className="mb-1.5 flex flex-wrap gap-1.5">
+              {attachments.map((a, i) =>
+                a.kind === "image" ? (
+                  <ImageAttachmentThumb key={i} attachment={a} />
+                ) : (
+                  <span
+                    key={i}
+                    className="inline-flex items-center gap-1 rounded-md bg-zinc-600/60 px-2 py-0.5 text-[12px] text-zinc-200"
+                  >
+                    <FileText className="h-3 w-3 shrink-0" />
+                    <span className="max-w-[160px] truncate">{a.filename}</span>
+                  </span>
+                )
+              )}
             </div>
           )}
           {message.content_text ? (

@@ -7,11 +7,15 @@ import {
   supabaseStorageUploadObject,
   supabaseTableRequest,
 } from "@/lib/supabase-rest";
+import type { ChatAttachmentKind } from "@/lib/chat-types";
 
 export const runtime = "nodejs";
 
-const CHAT_UPLOAD_BUCKET =
+const PDF_BUCKET =
   (process.env.SUPABASE_ASSIGNMENT_PDF_BUCKET ?? "assignment-pdfs");
+// Falls back to the PDF bucket so no second bucket needs to be provisioned.
+const IMAGE_BUCKET =
+  (process.env.SUPABASE_ASSIGNMENT_IMAGE_BUCKET ?? PDF_BUCKET);
 const CHAT_UPLOAD_MAX_BYTES = 10 * 1024 * 1024; // 10 MB
 
 function bufferToHex(buffer: ArrayBuffer) {
@@ -25,6 +29,38 @@ async function sha256HexFromBytes(bytes: Uint8Array): Promise<string> {
   copy.set(bytes);
   const digest = await crypto.subtle.digest("SHA-256", copy.buffer);
   return bufferToHex(digest);
+}
+
+type DetectedKind = {
+  kind: ChatAttachmentKind;
+  mimeType: string;
+  ext: string;
+} | null;
+
+function detectKind(bytes: Uint8Array): DetectedKind {
+  // PDF: %PDF
+  if (
+    bytes.length >= 4 &&
+    bytes[0] === 0x25 && bytes[1] === 0x50 && bytes[2] === 0x44 && bytes[3] === 0x46
+  ) {
+    return { kind: "pdf", mimeType: "application/pdf", ext: "pdf" };
+  }
+  // PNG: \x89PNG\r\n\x1a\n
+  if (
+    bytes.length >= 8 &&
+    bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47 &&
+    bytes[4] === 0x0d && bytes[5] === 0x0a && bytes[6] === 0x1a && bytes[7] === 0x0a
+  ) {
+    return { kind: "image", mimeType: "image/png", ext: "png" };
+  }
+  // JPEG: \xFF\xD8\xFF
+  if (
+    bytes.length >= 3 &&
+    bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff
+  ) {
+    return { kind: "image", mimeType: "image/jpeg", ext: "jpg" };
+  }
+  return null;
 }
 
 export async function POST(
@@ -77,29 +113,38 @@ export async function POST(
   }
 
   const bytes = new Uint8Array(await file.arrayBuffer());
+  const detected = detectKind(bytes);
 
-  // Validate PDF magic bytes (%PDF)
-  if (
-    bytes.length < 4 ||
-    bytes[0] !== 0x25 || // %
-    bytes[1] !== 0x50 || // P
-    bytes[2] !== 0x44 || // D
-    bytes[3] !== 0x46    // F
-  ) {
+  if (!detected) {
     return NextResponse.json(
-      { error: "only PDF files are accepted" },
+      { error: "only PDF, PNG, and JPEG files are accepted" },
       { status: 415 },
     );
   }
 
+  const { kind, mimeType, ext } = detected;
   const fileSha256 = await sha256HexFromBytes(bytes);
   const prefix = fileSha256.slice(0, 2);
-  const storagePath = `chat-uploads/${prefix}/${fileSha256}.pdf`;
-  const filename = file.name || `attachment-${fileSha256.slice(0, 8)}.pdf`;
+
+  let storagePath: string;
+  let bucket: string;
+  let dedupTable: string;
+
+  if (kind === "pdf") {
+    storagePath = `chat-uploads/${prefix}/${fileSha256}.pdf`;
+    bucket = PDF_BUCKET;
+    dedupTable = "stored_pdf_blobs";
+  } else {
+    storagePath = `chat-uploads/images/${prefix}/${fileSha256}.${ext}`;
+    bucket = IMAGE_BUCKET;
+    dedupTable = "stored_image_blobs";
+  }
+
+  const filename = file.name || `attachment-${fileSha256.slice(0, 8)}.${ext}`;
 
   // Dedup: check if blob already uploaded
   const existingBlobs = await supabaseTableRequest<{ file_sha256: string; uploaded_at: string | null }[]>({
-    table: "stored_pdf_blobs",
+    table: dedupTable,
     method: "GET",
     query: {
       file_sha256: `eq.${fileSha256}`,
@@ -114,31 +159,35 @@ export async function POST(
     existingBlobs[0].uploaded_at.trim().length > 0;
 
   if (!alreadyUploaded) {
-    // Upsert row in stored_pdf_blobs
+    const blobBody: Record<string, unknown> = {
+      file_sha256: fileSha256,
+      storage_path: storagePath,
+      byte_size: bytes.length,
+      uploaded_at: null,
+    };
+    if (kind === "image") {
+      blobBody.mime_type = mimeType;
+    }
+
     await supabaseTableRequest<unknown>({
-      table: "stored_pdf_blobs",
+      table: dedupTable,
       method: "POST",
       query: { on_conflict: "file_sha256" },
       headers: { Prefer: "resolution=merge-duplicates,return=minimal" },
-      body: {
-        file_sha256: fileSha256,
-        storage_path: storagePath,
-        byte_size: bytes.length,
-        uploaded_at: null,
-      },
+      body: blobBody,
     });
 
     await supabaseStorageUploadObject({
-      bucket: CHAT_UPLOAD_BUCKET,
+      bucket,
       path: storagePath,
       data: bytes,
-      contentType: "application/pdf",
+      contentType: mimeType,
       upsert: true,
     });
 
     const uploadedAt = new Date().toISOString();
     await supabaseTableRequest<unknown>({
-      table: "stored_pdf_blobs",
+      table: dedupTable,
       method: "PATCH",
       query: {
         file_sha256: `eq.${fileSha256}`,
@@ -150,9 +199,11 @@ export async function POST(
   }
 
   const response = NextResponse.json({
+    kind,
     filename,
     file_sha256: fileSha256,
     storage_path: storagePath,
+    mime_type: mimeType,
   });
   if (resolvedUser?.refreshedSession) {
     applyAuthCookies(response, resolvedUser.refreshedSession);

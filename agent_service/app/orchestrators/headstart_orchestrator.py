@@ -631,11 +631,19 @@ empty, assignment PDF content has been fully routed to the retrieved context sni
 
 ## Attached File Format
 Attached files arrive in structured blocks:
-  <attachment name="filename.pdf" source="assignment|user_upload">
-  ...extracted text...
+  <attachment name="filename.pdf" source="assignment|user_upload" type="pdf|image">
+  ...content...
   </attachment>
 - `source="assignment"` — original instructor files from Canvas (authoritative requirements).
-- `source="user_upload"` — files the student uploaded during this chat session (attempts, notes).
+- `source="user_upload"` — files the student uploaded or pasted during this chat session.
+- `type="pdf"` blocks contain extracted document text.
+- `type="image"` blocks contain a structured VLM description with two sections:
+    EXTRACTED TEXT: verbatim text visible in the image (or "None")
+    CONTEXT: description of diagrams, figures, UI, objects, or other visual elements (or "None")
+  Treat image block content as the student's visual input — use both sections to understand
+  what the image shows and respond specifically to it. Do NOT describe the image back to the
+  student unless asked; instead act on its content (e.g. help with the problem shown, explain
+  the diagram, critique the screenshot, etc.).
 When a student asks about a specific file, refer to it by its `name` attribute.
 When a student asks "what files are attached?", list the `name` of every block present.
 
@@ -720,9 +728,10 @@ Generated assignment guide (reference draft, may need major changes):
 Retrieved context snippets:
 {retrieval_context}
 
-Attached files — each block is tagged <attachment name="..." source="assignment|user_upload">:
+Assignment files (type="pdf", source="assignment"):
 {assignment_pdf_text}
 
+User-uploaded files (PDFs and images, source="user_upload"):
 {user_attachments_context}
 
 Calendar context (free slots):

@@ -6,6 +6,16 @@ export type PdfAttachment = {
   storagePath?: string;
 };
 
+export type ChatAttachmentKind = "pdf" | "image";
+
+export type ChatAttachment = {
+  kind: ChatAttachmentKind;
+  filename: string;
+  file_sha256: string;
+  storage_path: string;
+  mime_type: string;
+};
+
 export type PdfTextStyle = {
   bold?: boolean;
   italic?: boolean;

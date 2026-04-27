@@ -30,6 +30,14 @@ class PdfFile(BaseModel):
     file_sha256: Optional[str] = None
 
 
+class ImageFile(BaseModel):
+    filename: str
+    mime_type: str
+    base64_data: Optional[str] = None
+    storage_url: Optional[str] = None
+    file_sha256: Optional[str] = None
+
+
 class PdfTextStyle(BaseModel):
     bold: bool = False
     italic: bool = False

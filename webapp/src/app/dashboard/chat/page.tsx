@@ -33,6 +33,7 @@ import {
   stageLabel,
 } from "@/lib/chat-utils"
 import {
+  type ChatAttachment,
   type ChatMessageDto,
   type ChatSessionDto,
   type GuideVersionMeta,
@@ -581,13 +582,7 @@ function DashboardChatPageContent() {
     setErrorText(null)
 
     try {
-      type UploadedAttachment = {
-        filename: string
-        file_sha256: string
-        storage_path: string
-      }
-
-      const uploadedAttachments: UploadedAttachment[] = []
+      const uploadedAttachments: ChatAttachment[] = []
       for (const file of files) {
         const formData = new FormData()
         formData.append("file", file)
@@ -599,7 +594,7 @@ function DashboardChatPageContent() {
           const err = await uploadResponse.text()
           throw new Error(`Failed to upload ${file.name}: ${err}`)
         }
-        const uploaded = (await uploadResponse.json()) as UploadedAttachment
+        const uploaded = (await uploadResponse.json()) as ChatAttachment
         uploadedAttachments.push(uploaded)
       }
 

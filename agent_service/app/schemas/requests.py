@@ -23,7 +23,7 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
-from .shared import PdfExtraction, PdfFile
+from .shared import ImageFile, PdfExtraction, PdfFile
 
 
 class RunAgentRequest(BaseModel):
@@ -104,3 +104,4 @@ class ChatStreamRequest(BaseModel):
     assignment_pdf_extractions: Optional[List[PdfExtraction]] = Field(default_factory=list)
     assignment_pdf_text: Optional[str] = ""
     user_pdf_files: Optional[List[PdfFile]] = Field(default_factory=list)
+    user_image_files: Optional[List[ImageFile]] = Field(default_factory=list)

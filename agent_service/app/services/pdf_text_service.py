@@ -25,12 +25,12 @@ import io
 import math
 import os
 import re
-import shutil
 import tempfile
 import urllib.error
 import urllib.request
 import uuid
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any, Optional
@@ -45,10 +45,8 @@ MIN_NATIVE_WORDS = 8
 MIN_ALNUM_RATIO = 0.45
 MAX_SYMBOL_RATIO = 0.40
 
-OCR_RENDER_DPI = 240
-OCR_TESSERACT_CONFIG = "--oem 3 --psm 6"
-OCR_TESSERACT_FALLBACK_CONFIG = "--oem 3 --psm 11"
-OCR_SUCCESS_SCORE = 0.72
+VLM_DEFAULT_MODEL_ID = "meta/llama-3.2-90b-vision-instruct"
+VLM_RENDER_DPI = 240
 
 HEADER_FOOTER_SAMPLE_LINES = 2
 HEADER_FOOTER_REPEAT_RATIO = 0.60
@@ -84,6 +82,22 @@ def _env_int(name: str, fallback: int) -> int:
 
 PDF_FETCH_TIMEOUT_SECONDS = _env_float("PDF_FETCH_TIMEOUT_SECONDS", 15.0)
 PDF_FETCH_MAX_BYTES = _env_int("PDF_FETCH_MAX_BYTES", 25 * 1024 * 1024)
+
+VLM_TIMEOUT_SECONDS = _env_float("VLM_TIMEOUT_SECONDS", 30.0)
+VLM_MAX_RETRIES = _env_int("VLM_MAX_RETRIES", 2)
+VLM_MAX_CONCURRENT_PAGES = _env_int("VLM_MAX_CONCURRENT_PAGES", 4)
+
+VLM_TEXT_EXTRACTION_PROMPT = (
+    "You are a precise document text extraction system. "
+    "Extract ALL text visible in this page image exactly as it appears. "
+    "Preserve the original reading order, paragraph structure, headings, "
+    "bullet points, numbered lists, and table layouts. "
+    "For tables, use pipe-delimited rows. "
+    "For mathematical expressions, use plain text approximation. "
+    "If there is handwriting, transcribe it as accurately as possible. "
+    "Output ONLY the extracted text with no commentary, no preamble, "
+    "and no explanation. If no text is visible, output exactly: (no text)"
+)
 
 SIGNAL_BASE_SCORES = {
     "highlight": 1.00,
@@ -564,79 +578,80 @@ def _choose_page_text_variant(
 
 
 @lru_cache(maxsize=1)
-def _ocr_runtime_status() -> tuple[bool, str]:
-    try:
-        import pytesseract
-        from PIL import Image  # noqa: F401
-    except ImportError:
-        return False, "missing_python_dependencies"
+def _build_vlm_client():
+    """Build a cached ChatNVIDIA client for VLM-based page text extraction."""
+    from langchain_nvidia_ai_endpoints import ChatNVIDIA
 
-    tesseract_path = shutil.which("tesseract")
-    if not tesseract_path:
-        return False, "tesseract_not_found"
-
-    try:
-        pytesseract.get_tesseract_version()
-    except Exception as e:
-        return False, f"tesseract_unavailable: {e}"
-
-    return True, tesseract_path
+    model_id = os.getenv("VLM_MODEL_ID", VLM_DEFAULT_MODEL_ID)
+    return ChatNVIDIA(
+        model=model_id,
+        base_url="https://integrate.api.nvidia.com/v1",
+        api_key=os.environ["NVIDIA_API_KEY"],
+        temperature=0.0,
+        max_tokens=4096,
+        timeout=VLM_TIMEOUT_SECONDS,
+    )
 
 
-def _extract_ocr_text_from_page(page, filename: str, page_number: int) -> tuple[str, str]:
-    """OCR fallback for image-heavy pages. Returns normalized text and OCR status."""
-    runtime_ready, runtime_detail = _ocr_runtime_status()
-    if not runtime_ready:
+def _render_page_to_png(page) -> bytes:
+    """Render a PyMuPDF page to preprocessed PNG bytes. Must be called from the main thread."""
+    from PIL import ImageOps
+    from PIL import Image
+
+    pix = page.get_pixmap(dpi=VLM_RENDER_DPI, alpha=False)
+    image = Image.open(io.BytesIO(pix.tobytes("png")))
+    processed = ImageOps.autocontrast(image.convert("L"))
+    buf = io.BytesIO()
+    processed.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _extract_vlm_text_from_png(png_bytes: bytes, filename: str, page_number: int) -> tuple[str, str]:
+    """Send a pre-rendered page PNG to the VLM and return (normalized_text, status).
+
+    This function is safe to call from a thread pool — it has no PyMuPDF dependency.
+    """
+    from langchain_core.messages import HumanMessage
+
+    image_b64 = base64.b64encode(png_bytes).decode("utf-8")
+    message = HumanMessage(
+        content=[
+            {"type": "text", "text": VLM_TEXT_EXTRACTION_PROMPT},
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+        ]
+    )
+
+    client = _build_vlm_client()
+    last_error = None
+    for attempt in range(VLM_MAX_RETRIES):
+        try:
+            response = client.invoke([message])
+            raw_text = response.content or ""
+            break
+        except Exception as exc:
+            last_error = exc
+            logger.warning(
+                "VLM attempt %d/%d failed for %r page %d: %s",
+                attempt + 1,
+                VLM_MAX_RETRIES,
+                filename,
+                page_number,
+                exc,
+            )
+    else:
         logger.warning(
-            "OCR unavailable for %r page %d: %s",
+            "VLM exhausted retries for %r page %d: %s",
             filename,
             page_number,
-            runtime_detail,
+            last_error,
         )
-        return "", "unavailable"
-
-    try:
-        import pytesseract
-        from PIL import Image, ImageOps
-
-        pix = page.get_pixmap(dpi=OCR_RENDER_DPI, alpha=False)
-        image = Image.open(io.BytesIO(pix.tobytes("png")))
-        processed = ImageOps.autocontrast(image.convert("L"))
-
-        best_text = ""
-        best_score = -1.0
-
-        for config in (OCR_TESSERACT_CONFIG, OCR_TESSERACT_FALLBACK_CONFIG):
-            try:
-                candidate = _normalize_page_text(
-                    pytesseract.image_to_string(processed, config=config)
-                )
-            except Exception as e:
-                logger.warning(
-                    "OCR failed for %r page %d with config %r: %s",
-                    filename,
-                    page_number,
-                    config,
-                    e,
-                )
-                continue
-
-            score = _score_text_quality(candidate)
-            if candidate and score > best_score:
-                best_text = candidate
-                best_score = score
-
-            if score >= OCR_SUCCESS_SCORE:
-                break
-
-        if best_text:
-            return best_text, "success"
-
-        logger.warning("OCR produced no usable text for %r page %d", filename, page_number)
         return "", "failed"
-    except Exception as e:
-        logger.warning("OCR failed for %r page %d: %s", filename, page_number, e)
-        return "", "failed"
+
+    normalized = _normalize_page_text(raw_text)
+    if not normalized or normalized == "(no text)":
+        return "", "empty"
+
+    return normalized, "success"
 
 
 def _extract_pages_and_visual_signals(pdf_bytes: bytes, filename: str) -> tuple[list[ExtractedPage], list[dict]]:
@@ -655,45 +670,75 @@ def _extract_pages_and_visual_signals(pdf_bytes: bytes, filename: str) -> tuple[
 
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            # Phase 1 (main thread): extract native text, decide which pages need VLM,
+            # and pre-render those pages to PNG bytes while the doc is still open.
+            page_data: list[tuple[int, str, bool, bytes]] = []
             for idx, page in enumerate(doc, start=1):
                 native_text = page.get_text("text") or ""
-                should_try_ocr = _should_ocr_page(native_text)
-                ocr_text = ""
-                ocr_status = "not_attempted"
-                if should_try_ocr:
-                    ocr_text, ocr_status = _extract_ocr_text_from_page(
-                        page,
-                        filename=filename,
-                        page_number=idx,
-                    )
-
-                method, page_text = _choose_page_text_variant(
-                    native_text=native_text,
-                    ocr_text=ocr_text,
-                    ocr_attempted=should_try_ocr,
-                )
-
-                pages.append(
-                    ExtractedPage(
-                        number=idx,
-                        method=method,
-                        text=page_text,
-                    )
-                )
-                logger.debug(
-                    "Page extraction %r page %d | method=%s | ocr_candidate=%s | ocr_status=%s | native_score=%.3f | ocr_score=%.3f",
-                    filename,
-                    idx,
-                    method,
-                    should_try_ocr,
-                    ocr_status,
-                    _score_text_quality(_normalize_page_text(native_text)),
-                    _score_text_quality(ocr_text),
-                )
+                needs_vlm = _should_ocr_page(native_text)
+                png_bytes_for_page = b""
+                if needs_vlm:
+                    try:
+                        png_bytes_for_page = _render_page_to_png(page)
+                    except Exception as render_exc:
+                        logger.warning(
+                            "Page render failed for %r page %d: %s",
+                            filename,
+                            idx,
+                            render_exc,
+                        )
+                page_data.append((idx, native_text, needs_vlm, png_bytes_for_page))
 
                 if collect_visual:
                     visual_signals.extend(_extract_visual_signals_from_annotations(page, filename, idx))
                     visual_signals.extend(_extract_visual_signals_from_styles(page, filename, idx))
+
+        # Phase 2 (thread pool): submit VLM calls in parallel for pages that need it.
+        vlm_results: dict[int, tuple[str, str]] = {}
+        vlm_tasks = [(idx, png) for idx, _, needs, png in page_data if needs and png]
+
+        if vlm_tasks:
+            max_workers = min(len(vlm_tasks), VLM_MAX_CONCURRENT_PAGES)
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                future_to_idx = {
+                    executor.submit(_extract_vlm_text_from_png, png, filename, idx): idx
+                    for idx, png in vlm_tasks
+                }
+                for future in as_completed(future_to_idx):
+                    idx = future_to_idx[future]
+                    try:
+                        vlm_results[idx] = future.result()
+                    except Exception as exc:
+                        logger.warning("VLM future failed for %r page %d: %s", filename, idx, exc)
+                        vlm_results[idx] = ("", "failed")
+
+        # Phase 3 (main thread): assemble final per-page results in order.
+        for idx, native_text, needs_vlm, _ in page_data:
+            vlm_text, vlm_status = vlm_results.get(idx, ("", "not_attempted"))
+
+            method, page_text = _choose_page_text_variant(
+                native_text=native_text,
+                ocr_text=vlm_text,
+                ocr_attempted=needs_vlm,
+            )
+
+            pages.append(
+                ExtractedPage(
+                    number=idx,
+                    method=method,
+                    text=page_text,
+                )
+            )
+            logger.debug(
+                "Page extraction %r page %d | method=%s | vlm_candidate=%s | vlm_status=%s | native_score=%.3f | vlm_score=%.3f",
+                filename,
+                idx,
+                method,
+                needs_vlm,
+                vlm_status,
+                _score_text_quality(_normalize_page_text(native_text)),
+                _score_text_quality(vlm_text),
+            )
 
         visual_signals = _merge_visual_signals(visual_signals, limit=MAX_VISUAL_SIGNALS_PER_FILE)
         return pages, visual_signals
@@ -835,19 +880,22 @@ def _maybe_dump_pdf_text(parts: list[str]) -> None:
         logger.warning("Failed to write PDF debug dump to %r: %s", dump_dir, e)
 
 
-def format_attachment_block(filename: str, source: str, text: str) -> str:
+def format_attachment_block(
+    filename: str,
+    source: str,
+    text: str,
+    attachment_type: str = "pdf",
+    mime_type: str = "",
+) -> str:
     """
-    Wrap extracted PDF text in a structured block so the LLM can identify
+    Wrap extracted content in a structured block so the LLM can identify
     each file by name and distinguish assignment files from user uploads.
-
-    Format:
-        <attachment name="filename.pdf" source="assignment|user_upload">
-        ...extracted text...
-        </attachment>
     """
     safe_name = filename.replace('"', "'")
     safe_source = source.replace('"', "'")
-    return f'<attachment name="{safe_name}" source="{safe_source}">\n{text}\n</attachment>'
+    safe_type = attachment_type.replace('"', "'")
+    mime_attr = f' mime="{mime_type.replace(chr(34), chr(39))}"' if mime_type else ""
+    return f'<attachment name="{safe_name}" source="{safe_source}" type="{safe_type}"{mime_attr}>\n{text}\n</attachment>'
 
 
 def extract_pdf_context(req: RunAgentRequest) -> tuple[str, list[dict]]:

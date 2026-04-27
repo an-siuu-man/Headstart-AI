@@ -27,6 +27,7 @@ from ..core.logging import get_logger
 from ..schemas.requests import ChatStreamRequest, RunAgentRequest
 from ..schemas.responses import ChatCompletionResponse, RunAgentResponse
 from ..schemas.shared import PdfExtraction, PdfExtractionQuality, PdfPageExtraction
+from .image_extraction_service import extract_images_deduped
 from .pdf_extraction_service import (
     build_pdf_file_extraction_payload,
     collect_visual_signals_from_extractions,
@@ -34,6 +35,7 @@ from .pdf_extraction_service import (
     extract_pdf_extractions_with_file_map,
     format_pdf_extractions_for_prompt,
 )
+from .pdf_text_service import format_attachment_block
 
 logger = get_logger("headstart.main")
 
@@ -369,8 +371,9 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
       or chat.error on failure.
     """
     num_user_pdfs = len(req.user_pdf_files or [])
+    num_user_images = len(req.user_image_files or [])
     logger.info(
-        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d | thinking_mode=%s | user_pdfs=%d",
+        "POST %s [chat.stream] | payload_keys=%d | guide_len=%d | history=%d | retrieval_chunks=%d | thinking_mode=%s | user_pdfs=%d | user_images=%d",
         route_path,
         len(req.assignment_payload or {}),
         len(req.guide_markdown or ""),
@@ -378,6 +381,7 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
         len(req.retrieval_context or []),
         req.thinking_mode,
         num_user_pdfs,
+        num_user_images,
     )
 
     try:
@@ -419,18 +423,40 @@ def stream_chat_workflow(req: ChatStreamRequest, route_path: str) -> Generator[d
             ]
 
         user_extractions = _extract_user_pdf_files_deduped(req.user_pdf_files or [])
-        user_attachments_context = format_pdf_extractions_for_prompt(
+        pdf_user_attachments_context = format_pdf_extractions_for_prompt(
             user_extractions,
             source="user_upload",
         )
+
+        logger.info("[image-extraction] user_image_files received: %d", len(req.user_image_files or []))
+        image_results = extract_images_deduped(req.user_image_files or [])
+        image_blocks = [
+            format_attachment_block(
+                r.filename,
+                "user_upload",
+                r.description or "(no description extracted)",
+                attachment_type="image",
+                mime_type=r.mime_type,
+            )
+            for r in image_results
+            if r.status in ("success", "empty")
+        ]
+        image_attachments_context = "\n\n".join(image_blocks)
+
+        user_attachments_context = "\n\n".join(
+            part for part in [pdf_user_attachments_context, image_attachments_context] if part
+        )
+
         assignment_pdf_context = format_pdf_extractions_for_prompt(
             assignment_extractions,
             source="assignment",
         )
         logger.info(
-            "User attachment extraction: %d files -> %d chars | assignment_extractions=%d",
+            "User attachment extraction: %d PDFs -> %d chars | %d images -> %d chars | assignment_extractions=%d",
             num_user_pdfs,
-            len(user_attachments_context),
+            len(pdf_user_attachments_context),
+            len(image_results),
+            len(image_attachments_context),
             len(assignment_extractions),
         )
 

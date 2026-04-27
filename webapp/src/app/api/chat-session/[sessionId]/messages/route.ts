@@ -6,18 +6,13 @@ import {
 import { emitChatMessageCreated, getRuntimeSession } from "@/lib/chat-runtime-store";
 import { startFollowupChatRun } from "@/lib/chat-session-runner";
 import { applyAuthCookies, resolveRequestUser } from "@/lib/auth/session";
+import type { ChatAttachment } from "@/lib/chat-types";
 
 export const runtime = "nodejs";
 
 function isGuideReady(sessionStatus: string, runtimeStatus: string | undefined) {
   return sessionStatus === "completed" || runtimeStatus === "completed";
 }
-
-type ChatAttachment = {
-  filename: string;
-  file_sha256: string;
-  storage_path: string;
-};
 
 export async function POST(
   req: Request,
@@ -33,12 +28,17 @@ export async function POST(
   const attachments: ChatAttachment[] = rawAttachments
     .slice(0, 3)
     .filter(
-      (a: unknown): a is ChatAttachment =>
-        typeof a === "object" &&
-        a !== null &&
-        typeof (a as Record<string, unknown>).filename === "string" &&
-        typeof (a as Record<string, unknown>).file_sha256 === "string" &&
-        typeof (a as Record<string, unknown>).storage_path === "string",
+      (a: unknown): a is ChatAttachment => {
+        if (typeof a !== "object" || a === null) return false;
+        const obj = a as Record<string, unknown>;
+        return (
+          typeof obj.filename === "string" &&
+          typeof obj.file_sha256 === "string" &&
+          typeof obj.storage_path === "string" &&
+          typeof obj.mime_type === "string" &&
+          (obj.kind === "pdf" || obj.kind === "image")
+        );
+      },
     );
 
   if (!userId) {
